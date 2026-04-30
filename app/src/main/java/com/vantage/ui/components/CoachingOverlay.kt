@@ -6,7 +6,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -86,21 +88,44 @@ fun CoachingOverlay(
 @Composable
 private fun CoachingContent(text: String) {
     val direction = directionFor(text)
-    val edge = arrowEdgeFor(direction)
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (edge != null) {
-            EdgeArrow(
-                direction = direction!!,
-                modifier = Modifier.align(edge).padding(edgePadding(direction))
-            )
+        when (direction) {
+            Direction.DOWN -> {
+                // Stack the arrow tight on top of the bubble so the pair reads
+                // as a single bottom element instead of a chunky gap.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    EdgeArrow(direction = Direction.DOWN)
+                    SuggestionBubble(text = text)
+                }
+            }
+            Direction.UP, Direction.LEFT, Direction.RIGHT -> {
+                EdgeArrow(
+                    direction = direction,
+                    modifier = Modifier.align(arrowEdgeFor(direction)!!).padding(edgePadding(direction))
+                )
+                SuggestionBubble(
+                    text = text,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp)
+                )
+            }
+            else -> {
+                SuggestionBubble(
+                    text = text,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp)
+                )
+            }
         }
-        SuggestionBubble(
-            text = text,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp, start = 24.dp, end = 24.dp)
-        )
     }
 }
 

@@ -83,10 +83,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         fakeCoachJob?.cancel()
         fakeCoachJob = viewModelScope.launch {
             val script = listOf(
+                "Tilt the camera up a little",
                 "Tilt the camera down a bit",
-                "A little more — almost there",
-                "Step back two paces",
                 "Move slightly to the left",
+                "Pan a touch to the right",
                 "Hold still",
                 "Got it — that turned out great"
             )
