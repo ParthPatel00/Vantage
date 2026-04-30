@@ -10,7 +10,9 @@ import com.vantage.models.CameraUiState
 import com.vantage.models.ChatMessage
 import com.vantage.models.CoachingResult
 import com.vantage.models.FilterType
+import com.vantage.models.FlashMode
 import com.vantage.models.UnsplashPhoto
+import com.vantage.voice.VoiceSystem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
     private val gemmaEngine = GemmaEngine()
+    private val voiceSystem = VoiceSystem(application)
     private var fakeCoachJob: Job? = null
 
     init {
@@ -49,6 +52,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             Log.d("Vantage", "Sending frame to Gemma for analysis...")
             val description = gemmaEngine.describeImage(framePath)
             Log.d("Vantage", "Gemma response: $description")
+            
+            // AI Speaks the response
+            voiceSystem.speak(description)
+            
             _uiState.update {
                 it.copy(chatMessages = it.chatMessages + ChatMessage(description, isFromUser = false))
             }
@@ -68,8 +75,47 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onFilterSelected(filter: FilterType) {}
     fun onInspoPhotoSelected(photo: UnsplashPhoto) {}
-    fun onMicButtonHeld() {}
-    fun onMicButtonReleased() {}
+
+    fun onFlashToggled() {
+        _uiState.update {
+            val nextMode = when (it.flashMode) {
+                FlashMode.OFF -> FlashMode.ON
+                FlashMode.ON -> FlashMode.AUTO
+                FlashMode.AUTO -> FlashMode.OFF
+            }
+            it.copy(flashMode = nextMode)
+        }
+    }
+    
+    fun onMicButtonToggled() {
+        if (_uiState.value.isListening) {
+            Log.d("Vantage", "Stopping voice listener")
+            voiceSystem.stopListening()
+            _uiState.update { it.copy(isListening = false) }
+        } else {
+            Log.d("Vantage", "Starting voice listener")
+            _uiState.update { it.copy(isListening = true) }
+            voiceSystem.startListening(
+                onResult = { text ->
+                    _uiState.update {
+                        it.copy(
+                            isListening = false,
+                            chatMessages = it.chatMessages + ChatMessage(text, isFromUser = true)
+                        )
+                    }
+                },
+                onError = {
+                    _uiState.update { it.copy(isListening = false) }
+                }
+            )
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        voiceSystem.shutdown()
+    }
+
     fun onManualShutter() {}
     fun onCountdownComplete() {}
 

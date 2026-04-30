@@ -31,6 +31,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashAuto
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -52,6 +58,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.vantage.models.AppMode
 import com.vantage.models.CameraUiState
 import com.vantage.models.ChatMessage
+import com.vantage.models.FlashMode
+import com.vantage.ui.components.MicButton
 import com.vantage.ui.components.CoachingOverlay
 import com.vantage.ui.theme.AIAccentBlue
 import com.vantage.ui.theme.Black
@@ -70,6 +78,14 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
 
     val imageCapture = remember { ImageCapture.Builder().build() }
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+
+    LaunchedEffect(uiState.flashMode) {
+        imageCapture.flashMode = when (uiState.flashMode) {
+            FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
+            FlashMode.ON -> ImageCapture.FLASH_MODE_ON
+            FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -101,6 +117,24 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             modifier = Modifier.fillMaxSize()
         )
 
+        // Flash Toggle at the top
+        IconButton(
+            onClick = { viewModel.onFlashToggled() },
+            modifier = Modifier
+                .statusBarsPadding()
+                .padding(16.dp)
+                .align(Alignment.TopStart)
+                .background(Black.copy(alpha = 0.3f), CircleShape)
+        ) {
+            val icon = when (uiState.flashMode) {
+                FlashMode.OFF -> Icons.Default.FlashOff
+                FlashMode.ON -> Icons.Default.FlashOn
+                FlashMode.AUTO -> Icons.Default.FlashAuto
+            }
+            Icon(imageVector = icon, contentDescription = "Flash Mode", tint = White)
+        }
+
+        // Chat bubble overlay — shows last 3 AI messages
         // Coaching bubble + edge arrows — only in Coach Me mode.
         // Bottom safe area keeps the bubble clear of the toggle/capture row.
         CoachingOverlay(
@@ -162,6 +196,15 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
 
             Spacer(modifier = Modifier.height(32.dp))
         }
+
+        MicButton(
+            isListening = uiState.isListening,
+            onToggleListening = { viewModel.onMicButtonToggled() },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(24.dp)
+                .padding(bottom = 80.dp)
+        )
     }
 
     DisposableEffect(Unit) {
