@@ -204,9 +204,9 @@ Auto-capture triggers
 |-----------|-----------|---------|
 | Runtime | LiteRT-LM | `com.google.ai.edge.litertlm:litertlm-android:latest.release` |
 | Model | Gemma 4 E2B | `litert-community/gemma-4-E2B-it-litert-lm` from HuggingFace |
-| Backend (primary) | GPU | `Backend.GPU()` - broad compatibility, proven stable |
-| Backend (attempt) | NPU | `Backend.NPU(nativeLibraryDir = ...)` - try first, fallback to GPU |
-| Multimodal | Vision | `visionBackend = Backend.GPU()` for image analysis |
+| Backend (text) | NPU | `Backend.NPU(nativeLibraryDir)` — Snapdragon 8 Elite NPU via QNN HTP |
+| Backend (vision) | GPU | `Backend.GPU()` — for multimodal image analysis |
+| Backend (audio) | CPU | `Backend.CPU()` — required by EngineConfig even if unused |
 | Tool Use | Function Calling | `@Tool` / `@ToolParam` annotations for camera control |
 
 ### Camera
@@ -256,6 +256,8 @@ Auto-capture triggers
 <application>
     <uses-native-library android:name="libvndksupport.so" android:required="false"/>
     <uses-native-library android:name="libOpenCL.so" android:required="false"/>
+    <!-- Required for CPU↔Hexagon DSP communication when using NPU backend -->
+    <uses-native-library android:name="libcdsprpc.so" android:required="false"/>
 </application>
 ```
 
@@ -522,30 +524,48 @@ Auto-capture triggers
 ### Engine Initialization
 
 ```kotlin
-// BackendFactory with NPU -> GPU fallback
-object VantageEngine {
+class GemmaEngine {
     private var engine: Engine? = null
+    private var conversation: Conversation? = null
 
-    suspend fun initialize(context: Context, modelPath: String) {
-        val backend = try {
-            Backend.NPU(nativeLibraryDir = context.applicationInfo.nativeLibraryDir)
-        } catch (e: Exception) {
-            Log.w("Vantage", "NPU unavailable, falling back to GPU", e)
-            Backend.GPU()
-        }
+    suspend fun initialize(context: Context) = withContext(Dispatchers.IO) {
+        val modelPath = findModelFile(context) ?: return@withContext
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
-        val engineConfig = EngineConfig(
+        // QNN HTP requires ADSP_LIBRARY_PATH so the Hexagon DSP can locate
+        // libQnnHtpV79Skel.so at runtime. Must be set before Engine() is called.
+        Os.setenv("ADSP_LIBRARY_PATH", nativeLibDir, true)
+        Os.setenv("LD_LIBRARY_PATH", nativeLibDir, true)
+
+        val config = EngineConfig(
             modelPath = modelPath,
-            backend = backend,
-            visionBackend = Backend.GPU(),
-            cacheDir = context.cacheDir.absolutePath
+            backend = Backend.NPU(nativeLibDir),  // text on NPU
+            visionBackend = Backend.GPU(),          // images on GPU
+            audioBackend = Backend.CPU()            // audio on CPU
         )
-
-        engine = Engine(engineConfig)
-        engine!!.initialize() // ~10 seconds, must be on background thread
+        engine = Engine(config)
+        engine!!.initialize()
+        conversation = engine!!.createConversation()
     }
+}
+```
 
-    fun getEngine(): Engine = engine ?: throw IllegalStateException("Engine not initialized")
+> **Critical:** All 7 `.so` files in `jniLibs/arm64-v8a/` must come from the `litert-samples` repo (see Section 14). The QNN libs from the Qualcomm QAIRT SDK are version 1.6.0 and incompatible — `libLiteRtDispatch_Qualcomm.so` requires QNN System ≥ 1.8.0.
+
+### Sending Messages
+
+```kotlin
+val userMessage = Message.user(
+    Contents.of(
+        Content.ImageFile("/path/to/photo.jpg"),
+        Content.Text("Describe what you see in this image.")
+    )
+)
+conversation.sendMessageAsync(userMessage).collect { response ->
+    val chunk = response.contents.contents
+        .filterIsInstance<Content.Text>()
+        .joinToString("") { it.text }
+    // append chunk to result
 }
 ```
 
@@ -1305,17 +1325,52 @@ The project uses a version catalog (`gradle/libs.versions.toml`) for all depende
 ./gradlew assembleRelease
 ```
 
+### NPU Native Libraries
+
+Seven `.so` files are required in `app/src/main/jniLibs/arm64-v8a/`. **All must come from the `litert-samples` repo** — do not mix with QAIRT SDK versions (incompatible).
+
+```bash
+# Clone litert-samples (sparse, only the jniLibs folder)
+git clone --depth=1 --filter=blob:none --sparse \
+  https://github.com/google-ai-edge/litert-samples.git /tmp/litert-samples
+cd /tmp/litert-samples
+git sparse-checkout set compiled_model_api/qualcomm/llm_chatbot_npu/app/src/main/jniLibs/arm64-v8a
+
+# Copy all 6 files from the repo
+cp compiled_model_api/qualcomm/llm_chatbot_npu/app/src/main/jniLibs/arm64-v8a/*.so \
+   /path/to/Vantage/app/src/main/jniLibs/arm64-v8a/
+```
+
+| File | Purpose |
+|------|---------|
+| `libLiteRtDispatch_Qualcomm.so` | LiteRT→QNN NPU dispatch bridge |
+| `libGemmaModelConstraintProvider.so` | Gemma model constraint loading |
+| `libQnnHtp.so` | QNN HTP runtime (CPU-side) |
+| `libQnnHtpV79Skel.so` | QNN HTP DSP skel (runs on Hexagon) |
+| `libQnnHtpV79Stub.so` | QNN HTP stub |
+| `libQnnSystem.so` | QNN system library ≥ 1.8.0 required |
+
+Also add to `app/build.gradle.kts`:
+```kotlin
+packaging {
+    jniLibs { useLegacyPackaging = true }  // extracts .so files from APK so dlopen works
+}
+```
+
 ### Model Deployment to Device
 
 ```bash
-# Download model from HuggingFace (do this before the hackathon)
-# https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
+# Download the SM8750-optimized model from HuggingFace
+huggingface-cli download litert-community/gemma-4-E2B-it-litert-lm \
+  gemma-4-E2B-it_qualcomm_sm8750.litertlm --local-dir models
 
-# Push model to device
-adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Download/
+# Push to the app's external files directory (readable without extra permissions)
+adb shell mkdir -p /sdcard/Android/data/com.vantage/files/
+adb push models/gemma-4-E2B-it_qualcomm_sm8750.litertlm \
+  /sdcard/Android/data/com.vantage/files/
 
-# The app will prompt the user to select the model file on first launch
-# or auto-detect it in /sdcard/Download/
+# Verify
+adb shell ls -lh /sdcard/Android/data/com.vantage/files/
 ```
 
 ### APK Installation
@@ -1451,7 +1506,8 @@ The app should be installable as a single APK with no external setup required be
 
 | Risk | Mitigation |
 |------|-----------|
-| Model fails to load on NPU | Fallback to GPU backend (already coded) |
+| NPU fails to init | Verify all 7 `.so` files are from `litert-samples` repo (not QAIRT SDK). Check `ADSP_LIBRARY_PATH` is set before `Engine()` call. |
+| QNN version mismatch | Use only the `.so` files from `litert-samples/llm_chatbot_npu`. QNN System must be ≥ 1.8.0. |
 | Gemma returns malformed JSON | Parse tool calls, not raw text. LiteRT-LM handles this via `@Tool` annotations |
 | Unsplash API rate limit (50/hr demo) | Cache results aggressively. Limit searches to new coaching sessions only |
 | Camera2 API compatibility issues on S25 Ultra | Test early. Use CameraX as fallback for preview if needed |

@@ -15,6 +15,7 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += "arm64-v8a" }
 
         buildConfigField(
             "String", "UNSPLASH_ACCESS_KEY",
@@ -43,6 +44,9 @@ android {
 
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        // Required so QNN .so files are extracted to disk rather than loaded from the APK zip.
+        // Without this, dlopen fails because the QNN runtime can't mmap compressed entries.
+        jniLibs { useLegacyPackaging = true }
     }
 }
 

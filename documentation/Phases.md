@@ -238,7 +238,36 @@ Then replace `REPLACE_ME` with your actual keys (see Steps 7 and the ElevenLabs 
 
 ---
 
-#### Step 6 — Download the Gemma 4 E2B model and push to device
+#### Step 6 — Copy NPU native libraries into the project
+
+Seven `.so` files are required for the Qualcomm NPU backend. **They must all come from the `litert-samples` repo** — do not use the Qualcomm QAIRT SDK versions (those are QNN 1.6.0 which is incompatible; the dispatch library requires ≥ 1.8.0).
+
+```bash
+# Sparse-clone just the jniLibs folder from litert-samples
+git clone --depth=1 --filter=blob:none --sparse \
+  https://github.com/google-ai-edge/litert-samples.git /tmp/litert-samples
+cd /tmp/litert-samples
+git sparse-checkout set compiled_model_api/qualcomm/llm_chatbot_npu/app/src/main/jniLibs/arm64-v8a
+
+# Copy all .so files into the project
+cp compiled_model_api/qualcomm/llm_chatbot_npu/app/src/main/jniLibs/arm64-v8a/*.so \
+   /path/to/Vantage/app/src/main/jniLibs/arm64-v8a/
+```
+
+The required files are:
+- `libLiteRtDispatch_Qualcomm.so` — NPU dispatch bridge (must be from litert-samples)
+- `libGemmaModelConstraintProvider.so` — Gemma constraint loader
+- `libQnnHtp.so`, `libQnnHtpV79Skel.so`, `libQnnHtpV79Stub.so`, `libQnnSystem.so` — QNN HTP runtime (must be ≥ 1.8.0, from litert-samples)
+
+Verify all six are present:
+```bash
+ls app/src/main/jniLibs/arm64-v8a/
+# Should show all 6 (plus libQnnHtpV79CalculatorStub.so if present — that's fine)
+```
+
+---
+
+#### Step 7 — Download the Gemma 4 E2B model and push to device
 
 The model file is ~2.8 GB and git-ignored, so each dev needs to download it once. Only one person needs to push it to the shared demo device.
 
@@ -264,17 +293,20 @@ huggingface-cli download litert-community/gemma-4-E2B-it-litert-lm gemma-4-E2B-i
 5. Push it to the device:
 ```bash
 # Make sure your S25 Ultra is plugged in and USB debugging is on
-adb push models/gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Download/gemma-4-E2B-it_qualcomm_sm8750.litertlm
+adb shell mkdir -p /sdcard/Android/data/com.vantage/files/
+adb push models/gemma-4-E2B-it_qualcomm_sm8750.litertlm /sdcard/Android/data/com.vantage/files/gemma-4-E2B-it_qualcomm_sm8750.litertlm
 
 # This will take a few minutes. Verify it landed:
-adb shell ls -lh /sdcard/Download/gemma-4-E2B-it_qualcomm_sm8750.litertlm
+adb shell ls -lh /sdcard/Android/data/com.vantage/files/gemma-4-E2B-it_qualcomm_sm8750.litertlm
 ```
+
+> **Why this path?** Android 13+ (scoped storage) blocks apps from reading arbitrary files in `/sdcard/Download`. The app-specific external directory `/sdcard/Android/data/com.vantage/files/` is always readable by the app without any extra permissions, and writable by ADB.
 
 > **Do NOT download `gemma-4-E2B-it.litertlm`** (the generic variant). It runs on GPU only and is significantly slower than the SM8750 variant which uses the NPU.
 
 ---
 
-#### Step 7 — Get your Unsplash API key
+#### Step 8 — Get your Unsplash API key
 
 1. Go to https://unsplash.com/join and create a free account
 2. Go to https://unsplash.com/oauth/applications
@@ -291,7 +323,7 @@ The free tier allows 50 requests/hour which is plenty for development and the de
 
 ---
 
-#### Step 8 — First build and install
+#### Step 9 — First build and install
 
 **Mac/Linux:**
 ```bash
@@ -309,7 +341,7 @@ The app should launch on the S25 Ultra. You'll see the "Vantage / AI Camera Co-P
 
 ---
 
-#### Step 9 — Open in Android Studio (optional but recommended)
+#### Step 10 — Open in Android Studio (optional but recommended)
 
 1. Open Android Studio
 2. Click **Open** and select the `Vantage` folder
@@ -329,12 +361,14 @@ Run through this before picking up your phase. If anything fails, fix it before 
 java -version                    # must say 21.x.x
 adb version                      # must print a version number
 adb devices                      # must show your S25 Ultra as "device" (not "unauthorized")
+ls app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_Qualcomm.so   # must exist
+ls app/src/main/jniLibs/arm64-v8a/libGemmaModelConstraintProvider.so   # must exist
 ./gradlew assembleDebug          # must succeed with BUILD SUCCESSFUL
 ./gradlew installDebug           # must install on device without error
-adb shell ls /sdcard/Download/gemma-4-E2B-it_qualcomm_sm8750.litertlm   # must find the file
+adb shell ls /sdcard/Android/data/com.vantage/files/gemma-4-E2B-it_qualcomm_sm8750.litertlm   # must find the file
 ```
 
-All six green? You're ready. Pick up your phase.
+All eight green? You're ready. Pick up your phase.
 
 ---
 
@@ -456,9 +490,10 @@ All dependencies are pre-declared in `gradle/libs.versions.toml` and `app/build.
 <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
 <application ...>
-    <!-- Required for GPU/OpenCL acceleration -->
     <uses-native-library android:name="libvndksupport.so" android:required="false"/>
     <uses-native-library android:name="libOpenCL.so" android:required="false"/>
+    <!-- Required for CPU↔Hexagon DSP communication (NPU backend) -->
+    <uses-native-library android:name="libcdsprpc.so" android:required="false"/>
 </application>
 ```
 
@@ -651,77 +686,40 @@ app/src/main/java/com/vantage/
 
 ---
 
-## Phase 1B — AI Engine
+## Phase 1B — AI Engine ✅ COMPLETE
 
-**Branch:** `phase/1b-ai-engine` | **Time:** ~5–6 hours | **Needs:** Phase 0
+**Branch:** `main` | **Status:** Done. `GemmaEngine` is live on NPU and confirmed working on device.
 
-### Directory
+### What was built
 
 ```
 app/src/main/java/com/vantage/
   ai/
-    VantageEngine.kt       ← singleton Engine wrapper, NPU→GPU fallback
-    CoachingSession.kt     ← implements IAICoach, manages Conversation
-    CameraToolSet.kt       ← @Tool annotated function definitions
-    ToolCallParser.kt      ← converts Message.toolCalls → CoachingResult
-    SystemPrompts.kt       ← SYSTEM_PROMPT constant
-    ModelPathHelper.kt     ← finds .litertlm file on device storage
+    GemmaEngine.kt     ← Engine wrapper: init, describeImage, close
 ```
 
-### What to build
+`GemmaEngine` handles everything: model discovery, ADSP env var setup, `EngineConfig` with NPU/GPU/CPU backends, conversation creation, and streaming inference via `sendMessageAsync`.
 
-**Engine init (`VantageEngine.kt`):**
-```kotlin
-object VantageEngine {
-    private var engine: Engine? = null
-    var backendUsed = "unknown"; private set
+**Key implementation details:**
 
-    suspend fun initialize(context: Context, modelPath: String) {
-        val backend = try {
-            Backend.NPU(context.applicationInfo.nativeLibraryDir)
-                .also { backendUsed = "NPU" }
-        } catch (e: Exception) {
-            Backend.GPU().also { backendUsed = "GPU" }
-        }
-        engine = Engine(EngineConfig(
-            modelPath = modelPath,
-            backend = backend,
-            visionBackend = Backend.GPU(),
-            cacheDir = context.cacheDir.absolutePath
-        ))
-        engine!!.initialize()
-    }
+- `ADSP_LIBRARY_PATH` and `LD_LIBRARY_PATH` must be set via `Os.setenv` to `nativeLibraryDir` before `Engine()` is called. Without this, the QNN manager cannot locate `libQnnHtpV79Skel.so` on the Hexagon DSP and aborts with a native SIGABRT.
+- `EngineConfig` takes `backend = Backend.NPU(nativeLibDir)`, `visionBackend = Backend.GPU()`, `audioBackend = Backend.CPU()`. All three are required.
+- `engine.createConversation()` takes no arguments.
+- Messages are sent as `Message.user(Contents.of(Content.ImageFile(...), Content.Text(...)))` via `conversation.sendMessageAsync(msg).collect { ... }`.
+- Model search order: `getExternalFilesDir(null)` → `Download` folder → `filesDir` → `/data/local/tmp`. Prefers `*sm8750*` variant if multiple `.litertlm` files are found.
 
-    fun get(): Engine = engine ?: error("Not initialized")
-    fun isReady() = engine != null
-    fun close() { engine?.close(); engine = null }
-}
+**Confirmed working in Logcat:**
+```
+D Vantage: Found model at: /storage/emulated/0/Android/data/com.vantage/files/gemma-4-E2B-it_qualcomm_sm8750.litertlm
+I native: MainExecutorSettings: backend: NPU
+D Vantage: Gemma engine ready
 ```
 
-**Model finder (`ModelPathHelper.kt`):** checks `/sdcard/Download/`, `context.filesDir`, and `/data/local/tmp/` for any `*.litertlm` file. Prefers `*sm8750*` variant if multiple are found. Returns the first found path or null.
+### Still to wire up (Phase 2)
 
-**Tool calling (`CameraToolSet.kt`):** exact `@Tool` / `@ToolParam` definitions from Spec.md Section 7. Three tools: `analyzeScene`, `adjustCamera`, `captureReady`.
-
-**Parser (`ToolCallParser.kt`):** `fun parse(message: Message): CoachingResult?` — iterates `message.toolCalls`, maps arguments to `CoachingResult` fields. Returns null if no tool calls (plain text response — treat as voice message only).
-
-**Session (`CoachingSession.kt`)** implements `IAICoach`:
-- Creates `Conversation` with system prompt, `SamplerConfig(topK=10, topP=0.95, temperature=0.7)`, and tools
-- `analyzeFrame(path)`: sends `Content.ImageFile(path) + Content.Text("Analyze this scene...")`, collects `Flow<Message>`, finds tool call, returns `CoachingResult`
-- `sendVoiceCommand(text)`: sends plain text, same flow
-- `matchInspoStyle(desc, path)`: sends image + "I want my photo to match this style: $desc"
-- **Keep the same `Conversation` object alive across calls** — this is what gives Gemma memory of the conversation
-- Wire `VantageEngine.initialize()` into `VantageApplication.onCreate()`, updating `CameraViewModel.uiState.modelLoadProgress` over the loading period
-
-**System prompt (`SystemPrompts.kt`):** exact string from Spec.md Section 7. This is the only file to tune if Gemma's responses feel off.
-
-### Done when
-
-- `VantageEngine.isReady()` returns true after loading (verify in Logcat: "Engine ready on GPU/NPU")
-- Calling `analyzeFrame("path/to/test.jpg")` returns a `CoachingResult` with a non-empty `voiceMessage`
-- `CoachingResult.filter` maps to a valid `FilterType`
-- Calling `sendVoiceCommand("make it warmer")` returns a result with a different filter than before
-- Second `analyzeFrame()` call remembers context from the first (Gemma doesn't re-introduce itself)
-- Model missing → `errorMessage` set in state, no crash
+- `GemmaEngine.describeImage()` needs to be connected to `CameraViewModel` and the live coaching loop
+- `CoachingSession.kt`, `CameraToolSet.kt`, `ToolCallParser.kt`, `SystemPrompts.kt` still need to be written for the full tool-calling coaching flow
+- `VantageApplication.onCreate()` needs to trigger `GemmaEngine.initialize()` and update loading progress
 
 ---
 

@@ -11,3 +11,4 @@ interface ICameraEngine {
     fun capturePhoto(onSaved: (Uri) -> Unit)
     fun close()
 }
+

@@ -2,15 +2,15 @@ package com.vantage.ai
 
 import android.content.Context
 import android.os.Environment
+import android.system.Os
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
-import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -21,50 +21,51 @@ class GemmaEngine {
     private var conversation: Conversation? = null
 
     suspend fun initialize(context: Context) = withContext(Dispatchers.IO) {
-        val modelPath = findModelFile()
+        val modelPath = findModelFile(context)
         if (modelPath == null) {
             Log.e("Vantage", "No .litertlm model file found on device")
             return@withContext
         }
         Log.d("Vantage", "Found model at: $modelPath")
 
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        // QNN HTP needs ADSP_LIBRARY_PATH to locate libQnnHtpV79Skel.so on the Hexagon DSP.
         try {
-            val config = EngineConfig(
-                modelPath = modelPath,
-                backend = Backend.GPU(),
-                visionBackend = Backend.GPU(),
-                cacheDir = context.cacheDir.absolutePath
-            )
-            engine = Engine(config)
-            engine!!.initialize()
-
-            val convConfig = ConversationConfig(
-                systemInstruction = Contents.of("You are a photography assistant. Describe what you see in images clearly and concisely."),
-                samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.7)
-            )
-            conversation = engine!!.createConversation(convConfig)
-
-            Log.d("Vantage", "Gemma engine initialized successfully")
+            Os.setenv("ADSP_LIBRARY_PATH", nativeLibDir, true)
+            Os.setenv("LD_LIBRARY_PATH", nativeLibDir, true)
         } catch (e: Exception) {
-            Log.e("Vantage", "Failed to initialize Gemma engine", e)
+            Log.w("Vantage", "Could not set native library paths: ${e.message}")
         }
+
+        val config = EngineConfig(
+            modelPath = modelPath,
+            backend = Backend.NPU(nativeLibDir),
+            visionBackend = Backend.GPU(),
+            audioBackend = Backend.CPU()
+        )
+        engine = Engine(config)
+        engine!!.initialize()
+        conversation = engine!!.createConversation()
+        Log.d("Vantage", "Gemma engine ready")
     }
 
     suspend fun describeImage(imagePath: String): String = withContext(Dispatchers.IO) {
-        val conv = conversation
-        if (conv == null) {
-            Log.e("Vantage", "Engine not initialized")
-            return@withContext "Engine not ready"
-        }
-
+        val conv = conversation ?: return@withContext "Engine not ready"
         try {
-            val contents = Contents.of(
-                Content.ImageFile(imagePath),
-                Content.Text("Describe what you see in this image in 2-3 sentences.")
+            val userMessage = Message.user(
+                Contents.of(
+                    Content.ImageFile(imagePath),
+                    Content.Text("Describe what you see in this image in 2-3 sentences.")
+                )
             )
-            val message = conv.sendMessage(contents)
-            val textParts = message.contents.contents.filterIsInstance<Content.Text>()
-            textParts.joinToString("") { it.text }.ifBlank { "No response" }
+            val sb = StringBuilder()
+            conv.sendMessageAsync(userMessage).collect { response ->
+                val chunk = response.contents.contents
+                    .filterIsInstance<Content.Text>()
+                    .joinToString("") { it.text }
+                sb.append(chunk)
+            }
+            sb.toString().ifBlank { "No response" }
         } catch (e: Exception) {
             Log.e("Vantage", "Gemma inference failed", e)
             "Error: ${e.message}"
@@ -78,11 +79,14 @@ class GemmaEngine {
         engine = null
     }
 
-    private fun findModelFile(): String? {
+    private fun findModelFile(context: Context): String? {
         val searchDirs = listOf(
+            context.getExternalFilesDir(null),
             File(Environment.getExternalStorageDirectory(), "Download"),
+            context.filesDir,
             File("/data/local/tmp")
-        )
+        ).filterNotNull()
+
         for (dir in searchDirs) {
             if (!dir.exists()) continue
             val files = dir.listFiles { f -> f.name.endsWith(".litertlm") } ?: continue
