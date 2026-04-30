@@ -70,7 +70,7 @@ import com.vantage.viewmodel.CameraViewModel
 import java.io.File
 import java.io.FileOutputStream
 
-private val BottomControlsHeight = 210.dp
+private val BottomControlsHeight = 172.dp
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
