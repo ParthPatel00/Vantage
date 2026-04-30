@@ -57,11 +57,13 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.lifecycle.runtime.compose)
     implementation(libs.navigation.compose)
 
     // Camera2
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
 
     // Image loading (Unsplash thumbnails)
     implementation(libs.coil.compose)

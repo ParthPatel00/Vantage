@@ -1,47 +1,79 @@
 package com.vantage.viewmodel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.vantage.models.CameraUiState
+import com.vantage.models.CoachingResult
 import com.vantage.models.FilterType
 import com.vantage.models.UnsplashPhoto
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
-    fun onAIButtonTapped() {
-        // Phase 2: starts/stops the AI coaching analysis loop
+    private var fakeCoachJob: Job? = null
+
+    init {
+        startFakeCoachLoop()
     }
 
-    fun onModeToggled() {
-        // Phase 2: toggles between DO_IT_FOR_ME and COACH_ME
+    fun setCoachingResult(result: CoachingResult) {
+        _uiState.update {
+            it.copy(
+                pendingUserActions = result.userActions,
+                currentFilter = result.filter,
+                readyToCapture = result.readyToCapture
+            )
+        }
     }
 
-    fun onFilterSelected(filter: FilterType) {
-        // Phase 2: applies selected filter to camera preview
+    fun onAIButtonTapped() {}
+    fun onModeToggled() {}
+    fun onFilterSelected(filter: FilterType) {}
+    fun onInspoPhotoSelected(photo: UnsplashPhoto) {}
+    fun onMicButtonHeld() {}
+    fun onMicButtonReleased() {}
+    fun onManualShutter() {}
+    fun onCountdownComplete() {}
+
+    override fun onCleared() {
+        fakeCoachJob?.cancel()
+        super.onCleared()
     }
 
-    fun onInspoPhotoSelected(photo: UnsplashPhoto) {
-        // Phase 2: sends inspo photo to AI for style matching
-    }
+    private fun startFakeCoachLoop() {
+        fakeCoachJob?.cancel()
+        fakeCoachJob = viewModelScope.launch {
+            // Fake the model-load animation so the loading screen yields to the camera screen.
+            val steps = 20
+            repeat(steps) { i ->
+                _uiState.update { it.copy(modelLoadProgress = (i + 1f) / steps) }
+                delay(60)
+            }
+            _uiState.update { it.copy(modelLoaded = true, isCoachingActive = true) }
 
-    fun onMicButtonHeld() {
-        // Phase 2: starts speech recognition
-    }
-
-    fun onMicButtonReleased() {
-        // Phase 2: stops speech recognition
-    }
-
-    fun onManualShutter() {
-        // Phase 2: captures photo immediately
-    }
-
-    fun onCountdownComplete() {
-        // Phase 2: fires auto-capture after 3-2-1 countdown
+            val script = listOf(
+                "Tilt the camera down a bit",
+                "A little more — almost there",
+                "Step back two paces",
+                "Move slightly to the left",
+                "Hold still",
+                "Got it — that turned out great"
+            )
+            var i = 0
+            while (true) {
+                setCoachingResult(CoachingResult(userActions = listOf(script[i % script.size])))
+                delay(4_000)
+                i++
+            }
+        }
     }
 }
