@@ -8,8 +8,11 @@ import com.vantage.ai.GemmaEngine
 import com.vantage.models.AppMode
 import com.vantage.models.CameraUiState
 import com.vantage.models.ChatMessage
+import com.vantage.models.CoachingResult
 import com.vantage.models.FilterType
 import com.vantage.models.UnsplashPhoto
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,10 +25,22 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
     private val gemmaEngine = GemmaEngine()
+    private var fakeCoachJob: Job? = null
 
     init {
         viewModelScope.launch {
             gemmaEngine.initialize(application)
+        }
+        startFakeCoachLoop()
+    }
+
+    fun setCoachingResult(result: CoachingResult) {
+        _uiState.update {
+            it.copy(
+                pendingUserActions = result.userActions,
+                currentFilter = result.filter,
+                readyToCapture = result.readyToCapture
+            )
         }
     }
 
@@ -57,4 +72,30 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun onMicButtonReleased() {}
     fun onManualShutter() {}
     fun onCountdownComplete() {}
+
+    override fun onCleared() {
+        fakeCoachJob?.cancel()
+        gemmaEngine.close()
+        super.onCleared()
+    }
+
+    private fun startFakeCoachLoop() {
+        fakeCoachJob?.cancel()
+        fakeCoachJob = viewModelScope.launch {
+            val script = listOf(
+                "Tilt the camera up a little",
+                "Tilt the camera down a bit",
+                "Move slightly to the left",
+                "Pan a touch to the right",
+                "Hold still",
+                "Got it — that turned out great"
+            )
+            var i = 0
+            while (true) {
+                setCoachingResult(CoachingResult(userActions = listOf(script[i % script.size])))
+                delay(4_000)
+                i++
+            }
+        }
+    }
 }
