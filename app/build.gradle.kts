@@ -60,7 +60,7 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.navigation.compose)
 
-    // Camera2
+    // CameraX
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
@@ -70,6 +70,9 @@ dependencies {
 
     // Networking (Unsplash API)
     implementation(libs.okhttp)
+
+    // LiteRT-LM (Gemma on-device)
+    implementation(libs.litertlm)
 
     // Coroutines
     implementation(libs.coroutines.android)

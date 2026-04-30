@@ -1,8 +1,13 @@
 package com.vantage.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.vantage.ai.GemmaEngine
+import com.vantage.models.AppMode
 import com.vantage.models.CameraUiState
+import com.vantage.models.ChatMessage
 import com.vantage.models.CoachingResult
 import com.vantage.models.FilterType
 import com.vantage.models.UnsplashPhoto
@@ -14,14 +19,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class CameraViewModel : ViewModel() {
+class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
+    private val gemmaEngine = GemmaEngine()
     private var fakeCoachJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            gemmaEngine.initialize(application)
+        }
         startFakeCoachLoop()
     }
 
@@ -35,8 +44,28 @@ class CameraViewModel : ViewModel() {
         }
     }
 
+    fun onCaptureButtonTapped(framePath: String) {
+        viewModelScope.launch {
+            Log.d("Vantage", "Sending frame to Gemma for analysis...")
+            val description = gemmaEngine.describeImage(framePath)
+            Log.d("Vantage", "Gemma response: $description")
+            _uiState.update {
+                it.copy(chatMessages = it.chatMessages + ChatMessage(description, isFromUser = false))
+            }
+        }
+    }
+
     fun onAIButtonTapped() {}
-    fun onModeToggled() {}
+
+    fun onModeToggled() {
+        _uiState.update {
+            it.copy(
+                appMode = if (it.appMode == AppMode.DO_IT_FOR_ME)
+                    AppMode.COACH_ME else AppMode.DO_IT_FOR_ME
+            )
+        }
+    }
+
     fun onFilterSelected(filter: FilterType) {}
     fun onInspoPhotoSelected(photo: UnsplashPhoto) {}
     fun onMicButtonHeld() {}
@@ -46,20 +75,13 @@ class CameraViewModel : ViewModel() {
 
     override fun onCleared() {
         fakeCoachJob?.cancel()
+        gemmaEngine.close()
         super.onCleared()
     }
 
     private fun startFakeCoachLoop() {
         fakeCoachJob?.cancel()
         fakeCoachJob = viewModelScope.launch {
-            // Fake the model-load animation so the loading screen yields to the camera screen.
-            val steps = 20
-            repeat(steps) { i ->
-                _uiState.update { it.copy(modelLoadProgress = (i + 1f) / steps) }
-                delay(60)
-            }
-            _uiState.update { it.copy(modelLoaded = true, isCoachingActive = true) }
-
             val script = listOf(
                 "Tilt the camera down a bit",
                 "A little more — almost there",
