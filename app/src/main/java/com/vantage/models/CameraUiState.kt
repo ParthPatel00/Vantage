@@ -9,6 +9,7 @@ data class CameraUiState(
     val chatMessages: List<ChatMessage> = emptyList(),
     val inspoPhotos: List<UnsplashPhoto> = emptyList(),
     val selectedInspoPhoto: UnsplashPhoto? = null,
+    val flashMode: FlashMode = FlashMode.OFF,
     val isListening: Boolean = false,
     val pendingUserActions: List<String> = emptyList(),
     val countdownValue: Int = 0,
