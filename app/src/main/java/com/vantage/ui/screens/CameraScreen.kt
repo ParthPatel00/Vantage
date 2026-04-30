@@ -101,10 +101,11 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             modifier = Modifier.fillMaxSize()
         )
 
-        // Coaching bubble + edge arrows. Reserves the bottom controls strip
-        // so the DOWN arrow and bubble don't collide with the toggle/capture row.
+        // Coaching bubble + edge arrows — only in Coach Me mode.
+        // Bottom safe area keeps the bubble clear of the toggle/capture row.
         CoachingOverlay(
-            suggestion = uiState.pendingUserActions.firstOrNull(),
+            suggestion = uiState.pendingUserActions.firstOrNull()
+                ?.takeIf { uiState.appMode == AppMode.COACH_ME },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(bottom = BottomControlsHeight)
