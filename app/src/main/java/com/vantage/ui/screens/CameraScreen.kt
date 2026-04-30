@@ -28,7 +28,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,14 +60,16 @@ import com.vantage.models.CameraUiState
 import com.vantage.models.ChatMessage
 import com.vantage.models.FlashMode
 import com.vantage.ui.components.MicButton
+import com.vantage.ui.components.CoachingOverlay
 import com.vantage.ui.theme.AIAccentBlue
 import com.vantage.ui.theme.Black
 import com.vantage.ui.theme.ChatBubbleBg
 import com.vantage.ui.theme.White
 import com.vantage.viewmodel.CameraViewModel
-import kotlinx.coroutines.delay
 import java.io.File
 import java.io.FileOutputStream
+
+private val BottomControlsHeight = 210.dp
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
@@ -134,14 +135,26 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
         }
 
         // Chat bubble overlay — shows last 3 AI messages
+        // Coaching bubble + edge arrows — only in Coach Me mode.
+        // Bottom safe area keeps the bubble clear of the toggle/capture row.
+        CoachingOverlay(
+            suggestion = uiState.pendingUserActions.firstOrNull()
+                ?.takeIf { uiState.appMode == AppMode.COACH_ME },
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = BottomControlsHeight)
+        )
+
+        // Chat bubble overlay — last 3 AI messages, sits above the coaching bubble.
         ChatBubbleOverlay(
             messages = uiState.chatMessages.takeLast(3),
             modifier = Modifier
                 .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 200.dp)
+                .align(Alignment.BottomStart)
+                .padding(bottom = BottomControlsHeight + 160.dp)
         )
 
+        // Bottom controls — mode toggle above the capture button.
         Column(
             modifier = Modifier
                 .fillMaxSize()

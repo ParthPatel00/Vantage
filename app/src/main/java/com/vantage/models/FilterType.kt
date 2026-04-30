@@ -12,5 +12,11 @@ enum class FilterType(val displayName: String) {
     VINTAGE("Vintage"),
     MUTED("Muted"),
     FADE("Fade"),
-    MONO("Mono")
+    MONO("Mono");
+
+    companion object {
+        fun fromString(value: String): FilterType =
+            entries.firstOrNull { it.name.equals(value, ignoreCase = true) }
+                ?: NATURAL
+    }
 }
