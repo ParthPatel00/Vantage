@@ -111,16 +111,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        voiceSystem.shutdown()
-    }
-
     fun onManualShutter() {}
     fun onCountdownComplete() {}
 
     override fun onCleared() {
         fakeCoachJob?.cancel()
+        voiceSystem.shutdown()
         gemmaEngine.close()
         super.onCleared()
     }
