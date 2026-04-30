@@ -59,15 +59,19 @@ dependencies {
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.navigation.compose)
 
-    // Camera2
+    // CameraX
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
 
     // Image loading (Unsplash thumbnails)
     implementation(libs.coil.compose)
 
     // Networking (Unsplash API)
     implementation(libs.okhttp)
+
+    // LiteRT-LM (Gemma on-device)
+    implementation(libs.litertlm)
 
     // Coroutines
     implementation(libs.coroutines.android)

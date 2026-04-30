@@ -98,32 +98,43 @@ sudo apt-get update && sudo apt-get install -y git
 
 ---
 
-#### Step 2 — Install Java 17
+#### Step 2 — Install Java 21
 
-AGP 9.x and Gradle 9.x require Java 17 or higher. Java 21 works fine.
+Everyone should use **Java 21** so the team is on the same version.
 
 **Mac:**
 ```bash
-brew install --cask temurin@17
+brew install --cask temurin@21
+
+# Set JAVA_HOME and update PATH — add these to ~/.zshrc:
+echo 'export JAVA_HOME=$(/usr/libexec/java_home -v 21)' >> ~/.zshrc
+echo 'export PATH="$JAVA_HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# If you have an older Java (e.g. openjdk@11) linked via Homebrew, remove it from PATH.
+# Check ~/.zshrc for lines like: export PATH="/opt/homebrew/opt/openjdk@11/bin:$PATH"
+# and delete them, otherwise the old version takes priority.
+
 # Verify
-java -version   # should say 17.x.x
+java -version   # should say 21.x.x
 ```
 
 **Windows:**
-1. Download Adoptium Temurin 17 from https://adoptium.net/temurin/releases/?version=17
+1. Download Adoptium Temurin 21 from https://adoptium.net/temurin/releases/?version=21
 2. Run the installer. Check "Set JAVA_HOME variable" during install.
 3. Open a new PowerShell window and verify:
 ```powershell
-java -version   # should say 17.x.x
-echo $env:JAVA_HOME   # should point to your JDK folder
+java -version   # should say 21.x.x
+echo $env:JAVA_HOME   # should point to your JDK 21 folder
 ```
 
 **Linux:**
 ```bash
-sudo apt-get install -y openjdk-17-jdk
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-echo 'export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64' >> ~/.bashrc
-java -version
+sudo apt-get install -y openjdk-21-jdk
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> ~/.bashrc
+source ~/.bashrc
+java -version   # should say 21.x.x
 ```
 
 ---
@@ -315,7 +326,7 @@ Alternatively, VS Code with the **Kotlin** and **Android** extensions works fine
 Run through this before picking up your phase. If anything fails, fix it before writing code.
 
 ```bash
-java -version                    # must say 17.x.x or higher
+java -version                    # must say 21.x.x
 adb version                      # must print a version number
 adb devices                      # must show your S25 Ultra as "device" (not "unauthorized")
 ./gradlew assembleDebug          # must succeed with BUILD SUCCESSFUL

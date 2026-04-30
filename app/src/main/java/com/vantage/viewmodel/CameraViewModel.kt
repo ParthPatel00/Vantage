@@ -1,47 +1,60 @@
 package com.vantage.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.vantage.ai.GemmaEngine
+import com.vantage.models.AppMode
 import com.vantage.models.CameraUiState
+import com.vantage.models.ChatMessage
 import com.vantage.models.FilterType
 import com.vantage.models.UnsplashPhoto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
-class CameraViewModel : ViewModel() {
+class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
-    fun onAIButtonTapped() {
-        // Phase 2: starts/stops the AI coaching analysis loop
+    private val gemmaEngine = GemmaEngine()
+
+    init {
+        viewModelScope.launch {
+            gemmaEngine.initialize(application)
+        }
     }
+
+    fun onCaptureButtonTapped(framePath: String) {
+        viewModelScope.launch {
+            Log.d("Vantage", "Sending frame to Gemma for analysis...")
+            val description = gemmaEngine.describeImage(framePath)
+            Log.d("Vantage", "Gemma response: $description")
+            _uiState.update {
+                it.copy(chatMessages = it.chatMessages + ChatMessage(description, isFromUser = false))
+            }
+        }
+    }
+
+    fun onAIButtonTapped() {}
 
     fun onModeToggled() {
-        // Phase 2: toggles between DO_IT_FOR_ME and COACH_ME
+        _uiState.update {
+            it.copy(
+                appMode = if (it.appMode == AppMode.DO_IT_FOR_ME)
+                    AppMode.COACH_ME else AppMode.DO_IT_FOR_ME
+            )
+        }
     }
 
-    fun onFilterSelected(filter: FilterType) {
-        // Phase 2: applies selected filter to camera preview
-    }
-
-    fun onInspoPhotoSelected(photo: UnsplashPhoto) {
-        // Phase 2: sends inspo photo to AI for style matching
-    }
-
-    fun onMicButtonHeld() {
-        // Phase 2: starts speech recognition
-    }
-
-    fun onMicButtonReleased() {
-        // Phase 2: stops speech recognition
-    }
-
-    fun onManualShutter() {
-        // Phase 2: captures photo immediately
-    }
-
-    fun onCountdownComplete() {
-        // Phase 2: fires auto-capture after 3-2-1 countdown
-    }
+    fun onFilterSelected(filter: FilterType) {}
+    fun onInspoPhotoSelected(photo: UnsplashPhoto) {}
+    fun onMicButtonHeld() {}
+    fun onMicButtonReleased() {}
+    fun onManualShutter() {}
+    fun onCountdownComplete() {}
 }
