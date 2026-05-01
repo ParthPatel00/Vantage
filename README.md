@@ -4,6 +4,10 @@ Vantage is an on-device AI camera app that uses **Google Gemma 4 (E2B)** running
 
 Speak a style ("vintage", "cinematic", "linkedin headshot") and Vantage will find a matching reference photo, analyze both images on-device, and tune ISO, shutter speed, white balance, zoom, composition, and a cinematic filter to match that aesthetic.
 
+## Download
+
+Download the latest APK from the [GitHub Releases page](https://github.com/ParthPatel00/Vantage/releases/tag/v1.0).
+
 ## Team
 
 | Name | Email |
@@ -47,7 +51,7 @@ Speak a style ("vintage", "cinematic", "linkedin headshot") and Vantage will fin
 
 ### Option 1: Install the APK directly
 
-1. Download `vantage.apk` from the `app/build/outputs/apk/debug/` directory (or the zipped `Vantage.zip`)
+1. Download `vantage.apk` from the [Releases page](https://github.com/ParthPatel00/Vantage/releases/tag/v1.0)
 2. Connect your S25 via USB and enable USB debugging in Developer Options
 3. Install via ADB:
    ```bash
