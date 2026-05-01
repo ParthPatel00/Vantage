@@ -30,6 +30,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,7 +58,6 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,7 +79,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -88,7 +88,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import coil.compose.AsyncImage
 import com.vantage.ai.SceneAnalysis
 import com.vantage.camera.standard.AspectRatioManager
 import com.vantage.models.CameraUiState
@@ -113,14 +112,21 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
 
     var camera: Camera? by remember { mutableStateOf(null) }
     var filterStripVisible by remember { mutableStateOf(false) }
-    var showReasoning by remember { mutableStateOf(false) }
+    var showAiCard by remember { mutableStateOf(false) }
     val currentZoomRef = remember { mutableFloatStateOf(1f) }
+    // Hold the original bitmap in memory so enhanced = original + software post-processing
+    var originalBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
 
     val aiCaptureSignal by viewModel.aiCaptureSignal.collectAsState()
     val photoSignal by viewModel.photoSignal.collectAsState()
     val pendingAnalysis by viewModel.pendingAnalysis.collectAsState()
+    val saveOriginal by viewModel.saveOriginal.collectAsState()
+    val captureTimestamp by viewModel.captureTimestamp.collectAsState()
 
-    // Speech recognizer
+    // Dedup guards: track last processed signal values to prevent re-firing
+    var lastProcessedAiSignal by remember { mutableIntStateOf(0) }
+    var lastProcessedPhotoSignal by remember { mutableIntStateOf(0) }
+
     val speechRecognizer = remember {
         SpeechRecognizer.createSpeechRecognizer(context).apply {
             setRecognitionListener(object : RecognitionListener {
@@ -143,10 +149,8 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
     }
     DisposableEffect(Unit) { onDispose { speechRecognizer.destroy() } }
 
-    // Keep zoom ref in sync for ScaleGestureDetector callback
     LaunchedEffect(uiState.currentZoom) { currentZoomRef.floatValue = uiState.currentZoom }
 
-    // Apply flash mode
     LaunchedEffect(uiState.flashMode) {
         imageCapture.flashMode = when (uiState.flashMode) {
             FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
@@ -155,44 +159,33 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
         }
     }
 
-    // Apply zoom via CameraX
     LaunchedEffect(uiState.currentZoom) {
-        camera?.cameraControl?.setZoomRatio(uiState.currentZoom)
+        val cam = camera ?: return@LaunchedEffect
+        val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10f
+        val minZoom = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1f
+        val clamped = uiState.currentZoom.coerceIn(minZoom, maxZoom)
+        val linear = ((clamped - minZoom) / (maxZoom - minZoom)).coerceIn(0f, 1f)
+        cam.cameraControl.setLinearZoom(linear)
     }
 
-    // Apply Camera2 parameters from AI analysis
     LaunchedEffect(pendingAnalysis) {
         val cam = camera ?: return@LaunchedEffect
         val analysis = pendingAnalysis ?: return@LaunchedEffect
-        applyCamera2Settings(cam, analysis)
+        if (uiState.isFrontCamera) {
+            applyCamera2SettingsFrontCamera(cam, analysis)
+        } else {
+            applyCamera2Settings(cam, analysis)
+        }
     }
 
-    // Capture preview frame for AI analysis
+    // Capture frame for AI analysis. On the FIRST capture, also save as "Original" to gallery
+    // and keep the bitmap in memory for later post-processing.
     LaunchedEffect(aiCaptureSignal) {
-        if (aiCaptureSignal == 0) return@LaunchedEffect
-        Log.d("Vantage", "Capturing preview frame for AI (signal=$aiCaptureSignal)")
-        imageCapture.takePicture(
-            executor,
-            object : ImageCapture.OnImageCapturedCallback() {
-                override fun onCaptureSuccess(image: ImageProxy) {
-                    val buffer = image.planes[0].buffer
-                    val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-                    val file = File(context.cacheDir, "ai_frame.jpg")
-                    FileOutputStream(file).use { it.write(bytes) }
-                    image.close()
-                    viewModel.onPreviewFrameCaptured(file.absolutePath)
-                }
-                override fun onError(e: ImageCaptureException) {
-                    Log.e("Vantage", "AI frame capture failed", e)
-                }
-            }
-        )
-    }
-
-    // Take final photo: save both original and enhanced
-    LaunchedEffect(photoSignal) {
-        if (photoSignal == 0) return@LaunchedEffect
-        Log.d("Vantage", "Taking final photo (signal=$photoSignal)")
+        if (aiCaptureSignal == 0 || aiCaptureSignal == lastProcessedAiSignal) return@LaunchedEffect
+        lastProcessedAiSignal = aiCaptureSignal
+        val shouldSaveOriginal = saveOriginal
+        val ts = captureTimestamp
+        Log.d("Vantage", "Capturing frame for AI (signal=$aiCaptureSignal, saveOriginal=$shouldSaveOriginal)")
         imageCapture.takePicture(
             executor,
             object : ImageCapture.OnImageCapturedCallback() {
@@ -201,48 +194,70 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                         val buffer = image.planes[0].buffer
                         val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
                         val rotation = image.imageInfo.rotationDegrees
+
+                        if (shouldSaveOriginal) {
+                            var bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (rotation != 0) {
+                                val matrix = android.graphics.Matrix().apply { postRotate(rotation.toFloat()) }
+                                bitmap = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                            }
+                            originalBitmap = bitmap
+                            saveBitmapToMediaStore(context, bitmap, "Vantage_$ts")
+                            viewModel.onOriginalSaved()
+                            Log.d("Vantage", "Saved original: Vantage_$ts")
+                        }
+
+                        val file = File(context.cacheDir, "ai_frame.jpg")
+                        FileOutputStream(file).use { it.write(bytes) }
                         image.close()
-
-                        var bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        if (rotation != 0) {
-                            val matrix = android.graphics.Matrix().apply { postRotate(rotation.toFloat()) }
-                            bitmap = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-                        }
-
-                        val ts = System.currentTimeMillis()
-                        val originalUri = saveBitmapToMediaStore(context, bitmap, "Vantage_$ts")
-
-                        val analysis = pendingAnalysis
-                        val enhancedBitmap = if (analysis != null) {
-                            com.vantage.ai.ImageProcessor.process(bitmap, analysis)
-                        } else bitmap
-                        val enhancedUri = saveBitmapToMediaStore(context, enhancedBitmap, "Vantage_${ts}_enhanced")
-
-                        if (enhancedUri != null) {
-                            viewModel.onPhotoCaptured(enhancedUri)
-                        } else if (originalUri != null) {
-                            viewModel.onPhotoCaptured(originalUri)
-                        }
-                        Log.d("Vantage", "Saved original=$originalUri enhanced=$enhancedUri")
+                        viewModel.onPreviewFrameCaptured(file.absolutePath)
                     } catch (e: Exception) {
-                        Log.e("Vantage", "Photo processing failed", e)
+                        image.close()
+                        Log.e("Vantage", "AI frame capture failed", e)
                     }
-                    camera?.let { resetCamera2ToAuto(it) }
                 }
                 override fun onError(e: ImageCaptureException) {
-                    Log.e("Vantage", "Photo capture failed", e)
-                    camera?.let { resetCamera2ToAuto(it) }
+                    Log.e("Vantage", "AI frame capture failed", e)
                 }
             }
         )
     }
 
-    // Auto-hide reasoning after 4s
-    LaunchedEffect(uiState.aiReasoning) {
-        if (uiState.aiReasoning.isNotBlank()) {
-            showReasoning = true
-            delay(4000)
-            showReasoning = false
+    // After AI analysis is complete, apply software post-processing to the ORIGINAL bitmap
+    // and save as "Enhanced". No second capture needed.
+    LaunchedEffect(photoSignal) {
+        if (photoSignal == 0 || photoSignal == lastProcessedPhotoSignal) return@LaunchedEffect
+        lastProcessedPhotoSignal = photoSignal
+        val analysisSnapshot = pendingAnalysis
+        val ts = captureTimestamp
+        val srcBitmap = originalBitmap
+        Log.d("Vantage", "Creating enhanced from original (signal=$photoSignal, ts=$ts)")
+        if (srcBitmap != null && analysisSnapshot != null) {
+            try {
+                val enhancedBitmap = com.vantage.ai.ImageProcessor.process(srcBitmap, analysisSnapshot, context)
+                val enhancedUri = saveBitmapToMediaStore(context, enhancedBitmap, "Vantage_${ts}_enhanced")
+                if (enhancedUri != null) {
+                    viewModel.onPhotoCaptured(enhancedUri)
+                }
+                Log.d("Vantage", "Saved enhanced: Vantage_${ts}_enhanced")
+            } catch (e: Exception) {
+                Log.e("Vantage", "Enhanced processing failed", e)
+            }
+        } else {
+            Log.w("Vantage", "No original bitmap or analysis, skipping enhanced")
+        }
+        originalBitmap = null
+        camera?.let { resetCamera2ToAuto(it) }
+    }
+
+    // Show AI card during analysis and for a few seconds after
+    LaunchedEffect(uiState.isAiActive, uiState.aiReasoning) {
+        if (uiState.isAiActive) {
+            showAiCard = true
+        } else if (uiState.aiReasoning.isNotBlank()) {
+            showAiCard = true
+            delay(5000)
+            showAiCard = false
         }
     }
 
@@ -252,7 +267,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             .fillMaxSize()
             .background(Black)
     ) {
-        // === VIEWFINDER (aspect-ratio clipped, Samsung style) ===
+        // === VIEWFINDER ===
         val viewfinderRatio = when (uiState.currentRatio) {
             AspectRatioManager.AspectRatio.RATIO_4_3 -> 3f / 4f
             AspectRatioManager.AspectRatio.RATIO_16_9 -> 9f / 16f
@@ -314,7 +329,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 Box(modifier = Modifier.fillMaxSize().background(filterOverlay))
             }
 
-            // Grid lines + composition overlays
+            // Grid lines only - clean, no bounding boxes
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
@@ -324,39 +339,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 drawLine(lineColor, Offset(2 * w / 3, 0f), Offset(2 * w / 3, h), sw)
                 drawLine(lineColor, Offset(0f, h / 3), Offset(w, h / 3), sw)
                 drawLine(lineColor, Offset(0f, 2 * h / 3), Offset(w, 2 * h / 3), sw)
-
-                if (uiState.isAiActive && uiState.subjectBox.size == 4) {
-                    val sb = uiState.subjectBox
-                    val sLeft = sb[1] / 1000f * w
-                    val sTop = sb[0] / 1000f * h
-                    val sRight = sb[3] / 1000f * w
-                    val sBottom = sb[2] / 1000f * h
-                    drawRect(
-                        color = Color(0xFF4CAF50),
-                        topLeft = Offset(sLeft, sTop),
-                        size = androidx.compose.ui.geometry.Size(sRight - sLeft, sBottom - sTop),
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                    )
-                }
-
-                if (uiState.isAiActive && uiState.suggestedBox.size == 4 && !uiState.compositionOk) {
-                    val sg = uiState.suggestedBox
-                    val gLeft = sg[1] / 1000f * w
-                    val gTop = sg[0] / 1000f * h
-                    val gRight = sg[3] / 1000f * w
-                    val gBottom = sg[2] / 1000f * h
-                    val dashEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
-                        floatArrayOf(10.dp.toPx(), 6.dp.toPx()), 0f
-                    )
-                    drawRect(
-                        color = Color(0xFFFFD700),
-                        topLeft = Offset(gLeft, gTop),
-                        size = androidx.compose.ui.geometry.Size(gRight - gLeft, gBottom - gTop),
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(
-                            width = 2.dp.toPx(), pathEffect = dashEffect
-                        )
-                    )
-                }
             }
         }
 
@@ -401,36 +383,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // Voice button
-            IconButton(
-                onClick = {
-                    if (uiState.isListening) {
-                        speechRecognizer.stopListening()
-                        viewModel.onVoiceCancelled()
-                    } else {
-                        viewModel.onListeningStarted()
-                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                        }
-                        speechRecognizer.startListening(intent)
-                    }
-                },
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(
-                        if (uiState.isListening) Color(0xFFFF4444).copy(alpha = 0.8f)
-                        else Black.copy(alpha = 0.4f),
-                        CircleShape
-                    )
-            ) {
-                Icon(
-                    imageVector = if (uiState.isListening) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = "Voice",
-                    tint = White
-                )
-            }
-
             IconButton(
                 onClick = { filterStripVisible = !filterStripVisible },
                 modifier = Modifier
@@ -441,10 +393,10 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             }
         }
 
-        // === AI BADGE ===
+        // === AI BADGE (top-right) ===
         val infiniteTransition = rememberInfiniteTransition(label = "aiBadge")
         val pulseAlpha by infiniteTransition.animateFloat(
-            initialValue = 0.5f, targetValue = 1f,
+            initialValue = 0.6f, targetValue = 1f,
             animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
             label = "pulse"
         )
@@ -465,7 +417,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             )
         }
 
-        // === VOICE PROMPT DISPLAY (below AI badge) ===
+        // === VOICE PROMPT PILL (below AI badge) ===
         if (uiState.voicePrompt.isNotBlank() || uiState.isListening) {
             Row(
                 modifier = Modifier
@@ -503,7 +455,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             }
         }
 
-        // === AI STATUS + COMPOSITION COACHING OVERLAY ===
+        // === AI THINKING CARD (single clean card, no clutter) ===
         var dotCount by remember { mutableIntStateOf(0) }
         LaunchedEffect(uiState.isAiActive) {
             if (uiState.isAiActive) {
@@ -511,139 +463,105 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 while (true) { delay(500); dotCount = (dotCount + 1) % 4 }
             }
         }
-        val statusText = when {
-            uiState.isAiActive -> {
-                val dots = ".".repeat(dotCount + 1)
-                when (uiState.analysisIteration) {
-                    0 -> "Analyzing scene$dots"
-                    1 -> "Calibrating$dots"
-                    else -> "Fine-tuning$dots"
-                }
+
+        val statusLabel = when {
+            uiState.isAiActive -> when (uiState.analysisIteration) {
+                0 -> "Analyzing scene"
+                1 -> "Optimizing"
+                else -> "Fine-tuning"
             }
-            showReasoning && uiState.aiReasoning.isNotBlank() -> uiState.aiReasoning
             else -> null
         }
 
-        Column(
+        AnimatedVisibility(
+            visible = showAiCard,
+            enter = fadeIn(tween(300)) + slideInVertically(tween(300)) { it / 3 },
+            exit = fadeOut(tween(400)) + slideOutVertically(tween(400)) { it / 3 },
             modifier = Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 220.dp, start = 20.dp, end = 20.dp)
+                .zIndex(10f)
         ) {
-            AnimatedVisibility(
-                visible = statusText != null,
-                enter = fadeIn(tween(300)),
-                exit = fadeOut(tween(500))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xE6181818))
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Black.copy(alpha = 0.7f))
-                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                // Status row with pulsing indicator
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = statusText ?: "",
-                        color = White, fontSize = 14.sp,
-                        textAlign = TextAlign.Center, lineHeight = 20.sp
-                    )
-                }
-            }
-
-            AnimatedVisibility(
-                visible = uiState.isAiActive && uiState.compositionTip.isNotBlank(),
-                enter = fadeIn(tween(300)),
-                exit = fadeOut(tween(500))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(
-                            if (uiState.compositionOk) Color(0xCC1B5E20) else Color(0xCCE65100)
+                    if (uiState.isAiActive) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    Color(0xFF4CAF50).copy(alpha = pulseAlpha),
+                                    CircleShape
+                                )
                         )
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
+                    }
                     Text(
-                        text = uiState.compositionTip,
-                        color = White, fontSize = 13.sp,
-                        textAlign = TextAlign.Center
+                        text = if (uiState.isAiActive) {
+                            "${statusLabel}${".".repeat(dotCount + 1)}"
+                        } else {
+                            "Analysis complete"
+                        },
+                        color = if (uiState.isAiActive) Color(0xFF81C784) else White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
-            }
 
-            AnimatedVisibility(
-                visible = uiState.isAiActive && uiState.sceneDescription.isNotBlank(),
-                enter = fadeIn(tween(400)),
-                exit = fadeOut(tween(300))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Black.copy(alpha = 0.6f))
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
-                ) {
+                // Scene description
+                if (uiState.sceneDescription.isNotBlank()) {
                     Text(
                         text = uiState.sceneDescription,
-                        color = White.copy(alpha = 0.8f), fontSize = 12.sp,
-                        textAlign = TextAlign.Center, lineHeight = 16.sp,
+                        color = White.copy(alpha = 0.85f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
                         maxLines = 3
                     )
                 }
-            }
-        }
 
-        AnimatedVisibility(
-            visible = uiState.photographyTip.isNotBlank() && (uiState.isAiActive || showReasoning),
-            enter = fadeIn(tween(400)),
-            exit = fadeOut(tween(500)),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 120.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(horizontal = 24.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xCC1A237E))
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "Tip: ${uiState.photographyTip}",
-                    color = Color(0xFFBBDEFB), fontSize = 12.sp,
-                    textAlign = TextAlign.Center, lineHeight = 16.sp,
-                    maxLines = 2
-                )
-            }
-        }
+                // Composition tip
+                if (uiState.compositionTip.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .size(6.dp)
+                                .background(
+                                    if (uiState.compositionOk) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                    CircleShape
+                                )
+                        )
+                        Text(
+                            text = uiState.compositionTip,
+                            color = if (uiState.compositionOk) Color(0xFFA5D6A7) else Color(0xFFFFCC80),
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            maxLines = 2
+                        )
+                    }
+                }
 
-        // === SETTINGS GRID (compact 3-row, 4-per-row) ===
-        val analysis = pendingAnalysis
-        if (analysis != null) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 230.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
-                    SettingChip("ISO", analysis.iso.toString(), Modifier.weight(1f))
-                    SettingChip("SS", "1/${analysis.shutter}", Modifier.weight(1f))
-                    SettingChip("WB", wbLabel(analysis.wbMode), Modifier.weight(1f))
-                    SettingChip("Focus", String.format("%.1f", analysis.focusDistance), Modifier.weight(1f))
-                }
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
-                    SettingChip("Zoom", "${String.format("%.1f", analysis.zoom)}x", Modifier.weight(1f))
-                    SettingChip("NR", nrLabel(analysis.noiseReductionMode), Modifier.weight(1f))
-                    SettingChip("Sharp", sharpLabel(analysis.sharpnessMode), Modifier.weight(1f))
-                    SettingChip("Flash", analysis.flash.replaceFirstChar { it.uppercase() }, Modifier.weight(1f))
-                }
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
-                    SettingChip("EV", String.format("%+.1f", analysis.brightness), Modifier.weight(1f))
-                    SettingChip("Cont", String.format("%.1f", analysis.contrast), Modifier.weight(1f))
-                    SettingChip("Sat", String.format("%.1f", analysis.saturation), Modifier.weight(1f))
-                    SettingChip("Filter", analysis.filter.displayName, Modifier.weight(1f))
+                // Photography tip
+                if (uiState.photographyTip.isNotBlank()) {
+                    Text(
+                        text = "Tip: ${uiState.photographyTip}",
+                        color = Color(0xFF90CAF9),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        maxLines = 2
+                    )
                 }
             }
         }
@@ -678,7 +596,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             }
         }
 
-        // === FILTER STRIP (above zoom, high z-index) ===
+        // === FILTER STRIP ===
         AnimatedVisibility(
             visible = filterStripVisible,
             enter = fadeIn(tween(200)),
@@ -706,22 +624,33 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
+            IconButton(
+                onClick = {
+                    if (uiState.isListening) {
+                        speechRecognizer.stopListening()
+                        viewModel.onVoiceCancelled()
+                    } else {
+                        viewModel.onListeningStarted()
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                        }
+                        speechRecognizer.startListening(intent)
+                    }
+                },
                 modifier = Modifier
                     .size(52.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(White.copy(alpha = 0.1f))
-                    .clickable { onGalleryTapped() },
-                contentAlignment = Alignment.Center
-            ) {
-                if (uiState.lastCapturedUri != null) {
-                    AsyncImage(
-                        model = uiState.lastCapturedUri,
-                        contentDescription = "Last photo",
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
-                        contentScale = ContentScale.Crop
+                    .background(
+                        if (uiState.isListening) Color(0xFFFF4444) else White.copy(alpha = 0.1f),
+                        CircleShape
                     )
-                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = "Voice",
+                    tint = White,
+                    modifier = Modifier.size(28.dp)
+                )
             }
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -751,52 +680,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             cameraProviderFuture.get().unbindAll()
         }
     }
-}
-
-// === Setting chip (compact, for grid layout) ===
-@Composable
-private fun SettingChip(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier
-            .padding(horizontal = 2.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Black.copy(alpha = 0.7f))
-            .padding(horizontal = 4.dp, vertical = 4.dp)
-    ) {
-        Text(
-            text = value, color = Color(0xFFFFE57F),
-            fontSize = 11.sp, fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center, maxLines = 1
-        )
-        Text(
-            text = label, color = White.copy(alpha = 0.45f),
-            fontSize = 8.sp, textAlign = TextAlign.Center, maxLines = 1
-        )
-    }
-}
-
-private fun wbLabel(mode: Int): String = when (mode) {
-    CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> "Tungsten"
-    CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> "Fluor"
-    CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> "Day"
-    CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "Cloudy"
-    CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "Twilight"
-    CameraMetadata.CONTROL_AWB_MODE_SHADE -> "Shade"
-    else -> "Auto"
-}
-
-private fun nrLabel(mode: Int): String = when (mode) {
-    CameraMetadata.NOISE_REDUCTION_MODE_OFF -> "Off"
-    CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY -> "HQ"
-    CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL -> "Min"
-    else -> "Fast"
-}
-
-private fun sharpLabel(mode: Int): String = when (mode) {
-    CameraMetadata.EDGE_MODE_OFF -> "Off"
-    CameraMetadata.EDGE_MODE_HIGH_QUALITY -> "HQ"
-    else -> "Fast"
 }
 
 private fun filterOverlayColor(filter: com.vantage.models.FilterType): Color = when (filter) {
@@ -831,6 +714,22 @@ private fun applyCamera2Settings(camera: Camera, analysis: SceneAnalysis) {
         Log.d("Vantage", "Camera2 settings applied: ISO=${analysis.iso} shutter=1/${analysis.shutter}")
     } catch (e: Exception) {
         Log.e("Vantage", "Failed to apply Camera2 settings", e)
+    }
+}
+
+@androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+private fun applyCamera2SettingsFrontCamera(camera: Camera, analysis: SceneAnalysis) {
+    try {
+        val cam2 = Camera2CameraControl.from(camera.cameraControl)
+        val opts = CaptureRequestOptions.Builder().apply {
+            setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, analysis.wbMode)
+            setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, analysis.noiseReductionMode)
+            setCaptureRequestOption(CaptureRequest.EDGE_MODE, analysis.sharpnessMode)
+        }.build()
+        cam2.setCaptureRequestOptions(opts)
+        Log.d("Vantage", "Front camera: applied WB/NR/Edge only (auto exposure kept)")
+    } catch (e: Exception) {
+        Log.e("Vantage", "Failed to apply front camera settings", e)
     }
 }
 

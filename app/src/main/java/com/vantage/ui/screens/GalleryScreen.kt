@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -29,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,18 +48,14 @@ import kotlinx.coroutines.withContext
 @Composable
 fun GalleryScreen(
     onBack: () -> Unit,
-    onPhotoClick: (PhotoPair) -> Unit
+    onPhotoClick: (List<PhotoPair>, Int) -> Unit,
+    refreshTrigger: Any? = null
 ) {
     val context = LocalContext.current
     var photos by remember { mutableStateOf<List<PhotoPair>>(emptyList()) }
-    var refreshKey by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(refreshKey) {
+    LaunchedEffect(refreshTrigger) {
         photos = loadVantagePhotos(context)
-    }
-
-    LaunchedEffect(Unit) {
-        refreshKey++
     }
 
     Column(
@@ -111,7 +105,8 @@ fun GalleryScreen(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(photos) { pair ->
+                items(photos.size) { index ->
+                    val pair = photos[index]
                     AsyncImage(
                         model = pair.enhancedUri,
                         contentDescription = null,
@@ -119,7 +114,7 @@ fun GalleryScreen(
                         modifier = Modifier
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(4.dp))
-                            .clickable { onPhotoClick(pair) }
+                            .clickable { onPhotoClick(photos, index) }
                     )
                 }
             }
@@ -158,22 +153,26 @@ private suspend fun loadVantagePhotos(context: Context): List<PhotoPair> = withC
 
             Log.d("Vantage", "Gallery: found ${allFiles.size} files in DCIM/Vantage/")
 
-            val enhanced = allFiles.filter { it.key.contains("_enhanced") }
+            // Only consider exact-match enhanced files (skip MediaStore collision copies like "_enhanced (1).jpg")
+            val enhanced = allFiles.filter {
+                it.key.contains("_enhanced") && !it.key.contains("(")
+            }
             val originals = allFiles.filter { !it.key.contains("_enhanced") }
+            val pairedOriginals = mutableSetOf<String>()
 
             for ((enhancedName, enhancedData) in enhanced) {
                 val originalName = enhancedName.replace("_enhanced", "")
                 val originalData = allFiles[originalName]
                 if (originalData != null) {
                     photos.add(PhotoPair(originalData.first, enhancedData.first, enhancedData.second))
+                    pairedOriginals.add(originalName)
                 } else {
                     photos.add(PhotoPair(enhancedData.first, enhancedData.first, enhancedData.second))
                 }
             }
 
             for ((originalName, originalData) in originals) {
-                val enhancedName = originalName.replace(".jpg", "_enhanced.jpg")
-                if (!allFiles.containsKey(enhancedName)) {
+                if (originalName !in pairedOriginals) {
                     photos.add(PhotoPair(originalData.first, originalData.first, originalData.second))
                 }
             }

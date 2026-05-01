@@ -82,6 +82,9 @@ dependencies {
     // Coroutines
     implementation(libs.coroutines.android)
 
+    // GPU-accelerated image processing
+    implementation(libs.gpuimage)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

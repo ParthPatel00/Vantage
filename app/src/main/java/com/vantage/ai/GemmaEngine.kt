@@ -114,10 +114,17 @@ class GemmaEngine {
             """
 USER REQUEST: "$userIntent"
 This is the user's creative vision. It is your TOP PRIORITY. Choose the filter, color grading, contrast, saturation, and all settings to match what they described. Stick with your choice across rounds.
+
+STYLE EXAMPLES (use as starting points, adjust for the actual scene):
+- "cinematic portrait" -> filter:CINEMATIC, brightness:-0.05, contrast:1.40, saturation:0.80, gamma:1.15
+- "1980s retro look" -> filter:VINTAGE, brightness:0.05, contrast:1.15, saturation:0.70, gamma:1.20
+- "dramatic moody" -> filter:DRAMATIC, brightness:-0.10, contrast:1.55, saturation:0.75, gamma:1.10
+- "bright and airy" -> filter:MUTED, brightness:0.10, contrast:0.90, saturation:0.65, gamma:1.18
+- "vivid nature" -> filter:VIVID, brightness:0.02, contrast:1.25, saturation:1.45, gamma:1.05
 """
         } else ""
         return """
-You are an expert professional photographer. Analyze this image carefully.
+You are an expert professional photographer and photo editor. Analyze this image carefully.
 $intentBlock
 Identify: scene type (portrait, landscape, food, indoor, night, golden hour, architecture, etc.)
          light quality (bright sun, overcast, indoor warm, indoor cool, low light, backlit)
@@ -141,16 +148,17 @@ ZOOM:
 - Wide environment/group: 0.6 | Most scenes: 1.0
 - Flattering portrait (compresses background): 2.0 | Distant/telephoto: 3.0
 
-FILTER (default NATURAL unless user requested a style):
-- NATURAL: DEFAULT. Clean, no color grading
-- WARM: Golden hour sunsets, candlelit, warm-toned scenes
-- COOL: Winter, ocean, moody blue
-- VIVID: Bold colorful landscapes, flowers, nature
-- DRAMATIC: Dark moody urban, night cityscapes, high contrast
-- CINEMATIC: Film look, teal-orange grading, movie aesthetic
-- VINTAGE: Retro 70s/80s, faded warm tones, analog film look
-- MUTED: Soft pastel, desaturated, airy
-- NOIR: Black-and-white, high contrast, editorial
+FILTER - Choose the filter that best matches the scene mood AND user request. BE BOLD:
+- NATURAL: Clean look. Use ONLY when no clear mood or style fits.
+- WARM: Golden hour, sunsets, candlelit, cozy warm lighting
+- COOL: Winter, ocean, blue hour, moody cool tones
+- VIVID: Bold colorful scenes, landscapes, flowers, markets
+- DRAMATIC: Dark moody urban, stormy, night cityscapes, high-contrast tension
+- CINEMATIC: Film/movie look, teal-orange grade, storytelling portraits
+- VINTAGE: Retro 70s/80s, faded analog, warm nostalgia
+- MUTED: Soft pastel, airy, desaturated calm, minimalist
+- NOIR: Black-and-white drama, editorial, architecture
+BE BOLD with your choice. The user expects a visible transformation.
 
 FOCUS (0=infinity/far, 20=very close/macro):
 - Landscapes/subjects >3m: 0 | Portraits 1-2m: 5-8 | Table/food ~0.5m: 12-16 | Macro <30cm: 18-20
@@ -158,10 +166,11 @@ FOCUS (0=infinity/far, 20=very close/macro):
 NOISE REDUCTION: off (ISO<400) | fast (ISO 400-1600) | high_quality (ISO>1600)
 SHARPNESS: off or fast for portraits | high_quality for landscapes/architecture/text
 
-BRIGHTNESS: +0.1 to +0.3 for dark faces or shadows | -0.2 for overexposed
-CONTRAST: 1.0-1.2 portraits | 1.2-1.5 landscapes | 1.5-2.0 dramatic/noir
-SATURATION: 0.9-1.1 portraits | 1.2-1.5 nature/food | 0.6-0.8 muted/moody
-GAMMA: 1.0 normal | 1.1-1.2 lifts midtones and shadow detail
+BRIGHTNESS: -0.1 to +0.15 for exposure correction. Negative for moody/dramatic, positive for airy/bright.
+CONTRAST: 1.15-1.30 portraits | 1.30-1.50 landscapes/architecture | 1.50-1.80 dramatic/noir/cinematic
+SATURATION: 0.85-1.10 portraits | 1.25-1.50 vivid nature/food | 0.55-0.75 muted/cinematic/vintage
+GAMMA: 1.08-1.15 standard lift | 1.15-1.25 for faded/vintage looks | 1.0 only for noir/dramatic
+IMPORTANT: Do NOT output all-default values (brightness=0, contrast=1.0, saturation=1.0, gamma=1.0). Every photo deserves enhancement. Push your values to create a visible improvement.
 
 FLASH: "on" only if subject is in shadow in an otherwise bright scene. Default: "off".
 
@@ -177,7 +186,7 @@ This is your FIRST look at the scene. Apply your best initial settings.
 Set ready:false - you will analyze the result next round to confirm.
 
 Output ONLY a single-line JSON object, no markdown, no explanation:
-{"filter":"NATURAL","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.0,"contrast":1.0,"saturation":1.0,"gamma":1.0,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"move slightly left","composition_ok":true,"ready":false,"scene_description":"what you see in the scene","tip":"photography advice for this situation","reason":"brief rationale"}
+{"filter":"WARM","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.05,"contrast":1.25,"saturation":1.15,"gamma":1.10,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"move slightly left","composition_ok":true,"ready":false,"scene_description":"what you see in the scene","tip":"photography advice for this situation","reason":"brief rationale"}
 """.trimIndent()
     }
 
@@ -303,10 +312,10 @@ Output ONLY a single-line JSON object, no markdown, no explanation:
                 noiseReductionMode = noiseStringToMode(j.fuzzyString("noise_reduction", default = "fast")),
                 sharpnessMode = sharpnessStringToMode(j.optString("sharpness", "fast")),
                 zoom = listOf(0.6f, 1f, 2f, 3f).minByOrNull { abs(it - j.optDouble("zoom", 1.0).toFloat()) } ?: 1f,
-                brightness = j.optDouble("brightness", 0.0).toFloat().coerceIn(-2f, 2f),
-                contrast = j.optDouble("contrast", 1.0).toFloat().coerceIn(0.5f, 3f),
-                saturation = j.optDouble("saturation", 1.0).toFloat().coerceIn(0.5f, 3f),
-                gamma = j.optDouble("gamma", 1.0).toFloat().coerceIn(0.5f, 2f),
+                brightness = j.optDouble("brightness", 0.0).toFloat().coerceIn(-0.15f, 0.15f),
+                contrast = j.optDouble("contrast", 1.0).toFloat().coerceIn(0.80f, 1.80f),
+                saturation = j.optDouble("saturation", 1.0).toFloat().coerceIn(0.0f, 1.60f),
+                gamma = j.optDouble("gamma", 1.0).toFloat().coerceIn(0.90f, 1.30f),
                 flash = j.optString("flash", "off"),
                 ready = if (forceNotReady) false else j.fuzzyBoolean("ready", default = false),
                 reasoning = j.fuzzyString("reason", default = ""),

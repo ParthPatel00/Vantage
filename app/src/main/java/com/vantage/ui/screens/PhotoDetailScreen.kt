@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -36,9 +38,11 @@ import com.vantage.models.PhotoPair
 
 @Composable
 fun PhotoDetailScreen(
-    photoPair: PhotoPair,
+    photos: List<PhotoPair>,
+    initialIndex: Int,
     onBack: () -> Unit
 ) {
+    val pagerState = rememberPagerState(initialPage = initialIndex) { photos.size }
     var showEnhanced by remember { mutableStateOf(true) }
 
     Box(
@@ -46,17 +50,23 @@ fun PhotoDetailScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        Crossfade(
-            targetState = showEnhanced,
-            animationSpec = tween(300),
-            label = "photo_toggle"
-        ) { enhanced ->
-            AsyncImage(
-                model = if (enhanced) photoPair.enhancedUri else photoPair.originalUri,
-                contentDescription = if (enhanced) "Enhanced" else "Original",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            val pair = photos[page]
+            Crossfade(
+                targetState = showEnhanced,
+                animationSpec = tween(300),
+                label = "photo_toggle"
+            ) { enhanced ->
+                AsyncImage(
+                    model = if (enhanced) pair.enhancedUri else pair.originalUri,
+                    contentDescription = if (enhanced) "Enhanced" else "Original",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         IconButton(
@@ -88,6 +98,14 @@ fun PhotoDetailScreen(
             TogglePill("Enhanced", selected = showEnhanced) { showEnhanced = true }
         }
     }
+}
+
+@Composable
+fun PhotoDetailScreen(
+    photoPair: PhotoPair,
+    onBack: () -> Unit
+) {
+    PhotoDetailScreen(photos = listOf(photoPair), initialIndex = 0, onBack = onBack)
 }
 
 @Composable

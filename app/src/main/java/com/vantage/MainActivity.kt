@@ -61,17 +61,19 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
 
                 val pagerState = rememberPagerState(initialPage = 0) { 2 }
-                var selectedPhoto by remember { mutableStateOf<PhotoPair?>(null) }
+                var selectedPhotos by remember { mutableStateOf<List<PhotoPair>?>(null) }
+                var selectedIndex by remember { mutableStateOf(0) }
 
                 Crossfade(
-                    targetState = selectedPhoto,
+                    targetState = selectedPhotos,
                     animationSpec = tween(250),
                     label = "detail"
-                ) { photo ->
-                    if (photo != null) {
+                ) { photos ->
+                    if (photos != null) {
                         PhotoDetailScreen(
-                            photoPair = photo,
-                            onBack = { selectedPhoto = null }
+                            photos = photos,
+                            initialIndex = selectedIndex,
+                            onBack = { selectedPhotos = null }
                         )
                     } else {
                         HorizontalPager(
@@ -90,7 +92,11 @@ class MainActivity : ComponentActivity() {
                                     onBack = {
                                         scope.launch { pagerState.animateScrollToPage(0) }
                                     },
-                                    onPhotoClick = { pair -> selectedPhoto = pair }
+                                    onPhotoClick = { photos, index ->
+                                        selectedPhotos = photos
+                                        selectedIndex = index
+                                    },
+                                    refreshTrigger = uiState.lastCapturedUri
                                 )
                             }
                         }
