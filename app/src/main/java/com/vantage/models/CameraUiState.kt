@@ -10,6 +10,7 @@ data class CameraUiState(
     val inspoPhotos: List<UnsplashPhoto> = emptyList(),
     val selectedInspoPhoto: UnsplashPhoto? = null,
     val flashMode: FlashMode = FlashMode.OFF,
+    val isFrontCamera: Boolean = false,
     val isListening: Boolean = false,
     val pendingUserActions: List<String> = emptyList(),
     val countdownValue: Int = 0,

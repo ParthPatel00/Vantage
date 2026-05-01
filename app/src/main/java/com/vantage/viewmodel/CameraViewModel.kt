@@ -19,11 +19,16 @@ import com.vantage.models.UnsplashPhoto
 import com.vantage.voice.VoiceSystem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -37,6 +42,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private var fakeCoachJob: Job? = null
     private var lastCapturedFramePath: String? = null
+
+    // One-shot signal the screen collects to take a preview-frame snapshot. Long is the
+    // request timestamp so multiple rapid emits don't dedupe. Replay=0, buffer=4 — fire
+    // and forget; if a request lands while nothing's collecting (rare) it's dropped.
+    private val _snapshotRequests = MutableSharedFlow<Long>(extraBufferCapacity = 4)
+    val snapshotRequests: SharedFlow<Long> = _snapshotRequests.asSharedFlow()
+
+    // Reverse channel — screen reports back the path of the captured snapshot. Used by
+    // captureAndAwaitFrame to suspend until a frame is on disk.
+    private val _snapshotResults = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     init {
         viewModelScope.launch {
@@ -90,6 +105,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onFilterSelected(filter: FilterType) {}
 
+    /** Called by the screen after the inspiration snapshot lands on disk. */
+    fun onInspoSnapshotCaptured(framePath: String) {
+        Log.d(TAG, "Inspo snapshot captured: $framePath")
+        lastCapturedFramePath = framePath
+        _snapshotResults.tryEmit(framePath)
+    }
+
+    /** Dismiss the inspo card. Clears photos and selection so AnimatedVisibility hides it. */
+    fun onInspoCardDismissed() {
+        _uiState.update { it.copy(inspoPhotos = emptyList(), selectedInspoPhoto = null) }
+    }
+
     fun onInspoPhotoSelected(photo: UnsplashPhoto) {
         _uiState.update { it.copy(selectedInspoPhoto = photo) }
         addAiMessage("Great reference. I'll help you recreate the pose and framing.", speak = true)
@@ -120,6 +147,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 Log.w(TAG, "Inspo coaching call failed: ${e.message}")
             }
         }
+    }
+
+    fun onFlipCamera() {
+        _uiState.update { it.copy(isFrontCamera = !it.isFrontCamera) }
     }
 
     fun onFlashToggled() {
@@ -184,12 +215,21 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     /**
      * Demo-reliability fallback for voice routing. Once full Gemma tool-calling lands,
      * every transcript should be sent through `CoachingSession` and Gemma decides
-     * whether to invoke `findInspirationPhotos`. Until then, we detect a small set of
-     * inspiration phrases and dispatch the tool ourselves with a pose-focused query.
+     * whether to invoke `findInspirationPhotos`. Until then we detect inspiration
+     * intent in the transcript and dispatch the tool ourselves.
+     *
+     * Matching is intentionally permissive — STT often transcribes user requests in
+     * unexpected ways ("give me poses", "find me posers", "how do I pose"), so we
+     * trigger on any transcript containing a root word (pose/posing/inspir/reference)
+     * in addition to the explicit phrase list.
      */
     private fun handleVoiceTranscript(text: String) {
         val normalized = text.lowercase().trim()
-        if (INSPIRATION_PHRASES.any { normalized.contains(it) }) {
+        Log.d(TAG, "Transcript: '$text' (normalized='$normalized')")
+        val matchesPhrase = INSPIRATION_PHRASES.any { normalized.contains(it) }
+        val matchesRoot = INSPIRATION_ROOTS.any { normalized.contains(it) }
+        if (matchesPhrase || matchesRoot) {
+            Log.d(TAG, "Inspiration intent detected (phrase=$matchesPhrase root=$matchesRoot)")
             launchInspirationFallback(text)
         }
         // TODO Phase 2: route non-inspiration transcripts to Gemma via
@@ -197,19 +237,81 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun launchInspirationFallback(transcript: String) {
-        val query = buildPoseQuery(transcript)
-        val voiceMessage =
-            "I'll pull some references that fit this scene. Tap one and I'll help you recreate it."
         viewModelScope.launch {
+            // Capture a fresh reference frame in parallel — used by Gemma both to
+            // craft a scene-specific Unsplash query AND later by the recreate-pose
+            // coaching call after the user picks a thumbnail.
+            val framePath = captureAndAwaitFrame(timeoutMs = 1500L)
+
+            // Try Gemma first: voice transcript + actual scene → bespoke Unsplash query.
+            // Falls back to the keyword query if Gemma isn't ready or returns junk.
+            val gemmaQuery = framePath?.let { generateInspoQueryFromGemma(transcript, it) }
+            val query = gemmaQuery ?: buildPoseQuery(transcript)
+            val sceneTag = if (gemmaQuery != null) "gemma" else "fallback"
+            Log.d(TAG, "Inspiration query [$sceneTag]: '$query'")
+
+            val voiceMessage =
+                "I'll pull some references that fit this scene. Tap one and I'll help you recreate it."
             val result = cameraToolSet.findInspirationPhotos(
                 userRequest = transcript,
-                sceneDescription = "",
+                sceneDescription = framePath ?: "",
                 inspirationType = "human_pose",
                 unsplashQuery = query,
                 voiceMessage = voiceMessage
             )
             applyInspirationToolResult(result)
         }
+    }
+
+    /**
+     * Request a preview-frame snapshot from the screen and suspend until it lands or
+     * the timeout fires. Returns null on timeout (camera not bound, screen not
+     * collecting, etc.) — caller should fall back to a keyword query.
+     */
+    private suspend fun captureAndAwaitFrame(timeoutMs: Long): String? {
+        _snapshotRequests.tryEmit(System.currentTimeMillis())
+        return withTimeoutOrNull(timeoutMs) { _snapshotResults.first() }
+    }
+
+    /**
+     * Ask Gemma to produce an Unsplash search query from the user's voice request and
+     * the current scene. Returns null if Gemma isn't ready, the call fails, or the
+     * response is unusable. Output is sanitized to a single line (no quotes, no
+     * trailing punctuation, ≤ 80 chars) so it slots straight into the Unsplash URL.
+     */
+    private suspend fun generateInspoQueryFromGemma(transcript: String, framePath: String): String? {
+        if (!gemmaEngine.isReady()) return null
+        val prompt = """
+            The user said: "$transcript"
+            Look at the camera scene and produce a CONCISE Unsplash search query (5-10
+            words) for inspiration photos that match the request, the people in frame,
+            the setting, lighting, and mood. For pose requests, prioritize human pose
+            references — include terms like portrait pose, posing ideas, full body
+            portrait, fashion pose, editorial pose, or environment-specific pose terms
+            (urban street, coffee shop, beach, golden hour, night, studio, mirror, car).
+            Output ONLY the query as plain text. No quotes, no labels, no explanation.
+        """.trimIndent()
+        return try {
+            val raw = gemmaEngine.queryWithImage(framePath, prompt)
+            if (!isUsableModelResponse(raw)) return null
+            sanitizeUnsplashQuery(raw)
+        } catch (e: Exception) {
+            Log.w(TAG, "Gemma query generation failed: ${e.message}")
+            null
+        }
+    }
+
+    private fun sanitizeUnsplashQuery(raw: String): String? {
+        val first = raw.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            ?: return null
+        val cleaned = first
+            .removePrefix("\"").removeSuffix("\"")
+            .removePrefix("'").removeSuffix("'")
+            .trimEnd('.', ',', ';', ':')
+            .take(80)
+        return cleaned.takeIf { it.length >= 3 }
     }
 
     private fun applyInspirationToolResult(result: ToolResult.Inspiration) {
@@ -296,6 +398,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         val INSPIRATION_PHRASES = listOf(
             "find me poses",
             "show me poses",
+            "give me poses",
             "pose ideas",
             "pose reference",
             "find inspiration",
@@ -307,6 +410,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             "reference photos",
             "how should i pose",
             "what pose"
+        )
+
+        // Root words — matching is permissive on purpose so STT variations still
+        // route to the tool. "pose" catches poses/posing/posed; "inspir" catches
+        // inspiration/inspire/inspiring.
+        val INSPIRATION_ROOTS = listOf(
+            "pose",
+            "posing",
+            "inspir",
+            "reference photo"
         )
     }
 }

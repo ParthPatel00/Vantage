@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
@@ -89,51 +90,99 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
         }
     }
 
+    // Listen for ViewModel-initiated snapshot requests (fired by the inspiration tool)
+    // and capture a fresh preview frame to disk, reporting the path back via the VM.
+    // This is what lets Gemma both craft a scene-specific Unsplash query AND coach the
+    // user toward recreating a selected reference, without requiring the user to tap
+    // the manual capture button first.
+    LaunchedEffect(Unit) {
+        viewModel.snapshotRequests.collect {
+            imageCapture.takePicture(
+                ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(image: ImageProxy) {
+                        val buffer = image.planes[0].buffer
+                        val bytes = ByteArray(buffer.remaining())
+                        buffer.get(bytes)
+                        val file = File(context.cacheDir, "inspo_frame.jpg")
+                        FileOutputStream(file).use { out -> out.write(bytes) }
+                        image.close()
+                        Log.d("Vantage", "Inspo snapshot: ${file.absolutePath} (${bytes.size} bytes)")
+                        viewModel.onInspoSnapshotCaptured(file.absolutePath)
+                    }
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.e("Vantage", "Inspo snapshot capture failed", exception)
+                    }
+                }
+            )
+        }
+    }
+
+    val previewView = remember {
+        PreviewView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
+
+    // Bind / rebind the camera whenever the front-facing flag flips. Pulled out of the
+    // AndroidView factory so the flip button can drive a real rebind instead of having
+    // to recreate the PreviewView.
+    LaunchedEffect(uiState.isFrontCamera) {
+        val cameraProvider = cameraProviderFuture.get()
+        val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+        val selector = if (uiState.isFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
+                       else CameraSelector.DEFAULT_BACK_CAMERA
+        cameraProvider.unbindAll()
+        try {
+            cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageCapture)
+        } catch (e: Exception) {
+            Log.e("Vantage", "Camera bind failed for front=${uiState.isFrontCamera}", e)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Black)
     ) {
         AndroidView(
-            factory = { ctx ->
-                PreviewView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = surfaceProvider
-                    }
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageCapture
-                    )
-                }
-            },
+            factory = { previewView },
             modifier = Modifier.fillMaxSize()
         )
 
-        // Flash Toggle at the top
-        IconButton(
-            onClick = { viewModel.onFlashToggled() },
+        // Top-left controls: flash + flip-camera, side by side.
+        Row(
             modifier = Modifier
                 .statusBarsPadding()
                 .padding(16.dp)
-                .align(Alignment.TopStart)
-                .background(Black.copy(alpha = 0.3f), CircleShape)
+                .align(Alignment.TopStart),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            val icon = when (uiState.flashMode) {
-                FlashMode.OFF -> Icons.Default.FlashOff
-                FlashMode.ON -> Icons.Default.FlashOn
-                FlashMode.AUTO -> Icons.Default.FlashAuto
+            IconButton(
+                onClick = { viewModel.onFlashToggled() },
+                modifier = Modifier.background(Black.copy(alpha = 0.3f), CircleShape)
+            ) {
+                val icon = when (uiState.flashMode) {
+                    FlashMode.OFF -> Icons.Default.FlashOff
+                    FlashMode.ON -> Icons.Default.FlashOn
+                    FlashMode.AUTO -> Icons.Default.FlashAuto
+                }
+                Icon(imageVector = icon, contentDescription = "Flash Mode", tint = White)
             }
-            Icon(imageVector = icon, contentDescription = "Flash Mode", tint = White)
+            IconButton(
+                onClick = { viewModel.onFlipCamera() },
+                modifier = Modifier.background(Black.copy(alpha = 0.3f), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Cameraswitch,
+                    contentDescription = if (uiState.isFrontCamera) "Switch to back camera" else "Switch to front camera",
+                    tint = White
+                )
+            }
         }
 
         // Chat bubble overlay — shows last 3 AI messages
@@ -216,6 +265,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             photos = uiState.inspoPhotos,
             selected = uiState.selectedInspoPhoto,
             onSelect = { viewModel.onInspoPhotoSelected(it) },
+            onDismiss = { viewModel.onInspoCardDismissed() },
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()

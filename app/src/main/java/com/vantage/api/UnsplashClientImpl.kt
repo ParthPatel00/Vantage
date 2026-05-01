@@ -17,15 +17,18 @@ class UnsplashClientImpl(
 
     override suspend fun searchPhotos(query: String, perPage: Int): Result<List<UnsplashPhoto>> =
         withContext(Dispatchers.IO) {
-            val key = "$query|$perPage"
+            // Random page 1..5 so repeated identical queries still surface fresh photos
+            // (Unsplash returns up to ~10k results per query for popular terms).
+            val page = (1..5).random()
+            val key = "$query|$perPage|$page"
             cache[key]?.let { return@withContext Result.success(it) }
             try {
-                val raw = service.fetchSearchPhotos(query, perPage)
+                val raw = service.fetchSearchPhotos(query, perPage, page)
                 val photos = parsePhotos(raw)
                 cache[key] = photos
                 Result.success(photos)
             } catch (t: Throwable) {
-                Log.w(TAG, "Unsplash search failed for '$query': ${t.message}")
+                Log.w(TAG, "Unsplash search failed for '$query' page=$page: ${t.message}")
                 Result.failure(t)
             }
         }
