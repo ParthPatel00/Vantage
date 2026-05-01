@@ -17,5 +17,9 @@ data class CameraUiState(
     val modelLoaded: Boolean = false,
     val modelLoadProgress: Float = 0f,
     val lastCapturedUri: Uri? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val voiceCoachEnabled: Boolean = false,
+    val coachRevision: Int = 0,
+    val coachingSubject: String = "",
+    val lastCoachDebug: String = ""
 )
