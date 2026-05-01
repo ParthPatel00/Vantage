@@ -5,6 +5,10 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vantage.ai.GemmaEngine
+import com.vantage.camera.standard.AspectRatioManager
+import com.vantage.camera.standard.LensSwitchingProvider
+import com.vantage.camera.standard.StandardCameraManager
+import com.vantage.camera.standard.AdvancedParameterHandler
 import com.vantage.models.AppMode
 import com.vantage.models.CameraUiState
 import com.vantage.models.ChatMessage
@@ -12,6 +16,7 @@ import com.vantage.models.CoachingResult
 import com.vantage.models.FilterType
 import com.vantage.models.FlashMode
 import com.vantage.models.UnsplashPhoto
+import com.vantage.settings.AdvancedSettingsRegistry
 import com.vantage.voice.VoiceSystem
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,14 +37,123 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private var currentCoachStep: String? = null
 
     // Increments each time the ViewModel wants the screen to take one coaching frame.
-    // Using a counter (not Boolean) so consecutive signals are always distinct values.
     private val _coachCaptureSignal = MutableStateFlow(0)
     val coachCaptureSignal: StateFlow<Int> = _coachCaptureSignal.asStateFlow()
+    
+    // Standard Camera Modules
+    val cameraManager = StandardCameraManager(application)
+    private val lensProvider = LensSwitchingProvider(application)
+    
+    // Pro State
+    private val _availableLenses = MutableStateFlow<List<LensSwitchingProvider.LensInfo>>(emptyList())
+    val availableLenses: StateFlow<List<LensSwitchingProvider.LensInfo>> = _availableLenses.asStateFlow()
+    
+    private val _selectedLens = MutableStateFlow<LensSwitchingProvider.LensInfo?>(null)
+    val selectedLens: StateFlow<LensSwitchingProvider.LensInfo?> = _selectedLens.asStateFlow()
+    
+    private val _currentRatio = MutableStateFlow(AspectRatioManager.AspectRatio.RATIO_4_3)
+    val currentRatio: StateFlow<AspectRatioManager.AspectRatio> = _currentRatio.asStateFlow()
+
+    private val _manualSettings = MutableStateFlow(AdvancedParameterHandler.ManualSettings(zoomRatio = 1.0f))
+    val manualSettings: StateFlow<AdvancedParameterHandler.ManualSettings> = _manualSettings.asStateFlow()
+
+    // Dynamic Settings State
+    private val _settingsValues = MutableStateFlow<Map<AdvancedSettingsRegistry.SettingType, Float>>(
+        AdvancedSettingsRegistry.ALL_SETTINGS.associate { it.type to it.defaultValue }
+    )
+    val settingsValues: StateFlow<Map<AdvancedSettingsRegistry.SettingType, Float>> = _settingsValues.asStateFlow()
+
+    private val _activeAdjustment = MutableStateFlow(AdvancedSettingsRegistry.SettingType.NONE)
+    val activeAdjustment: StateFlow<AdvancedSettingsRegistry.SettingType> = _activeAdjustment.asStateFlow()
+    
+    private val _isFilterListVisible = MutableStateFlow(false)
+    val isFilterListVisible: StateFlow<Boolean> = _isFilterListVisible.asStateFlow()
+
+    // Convenience computed values for OpenGL
+    val brightness: StateFlow<Float> get() = MutableStateFlow(_settingsValues.value[AdvancedSettingsRegistry.SettingType.BRIGHTNESS] ?: 0f)
+    val contrast: StateFlow<Float> get() = MutableStateFlow(_settingsValues.value[AdvancedSettingsRegistry.SettingType.CONTRAST] ?: 1f)
+    val saturation: StateFlow<Float> get() = MutableStateFlow(_settingsValues.value[AdvancedSettingsRegistry.SettingType.SATURATION] ?: 1f)
+    val gamma: StateFlow<Float> get() = MutableStateFlow(_settingsValues.value[AdvancedSettingsRegistry.SettingType.GAMMA] ?: 1f)
 
     init {
         viewModelScope.launch {
             gemmaEngine.initialize(application)
+            cameraManager.startBackgroundThread()
+            refreshLenses()
         }
+    }
+
+    private fun refreshLenses() {
+        val lenses = lensProvider.getAvailableLenses()
+        _availableLenses.value = lenses
+        if (_selectedLens.value == null) {
+            _selectedLens.value = lenses.find { it.facing == android.hardware.camera2.CameraMetadata.LENS_FACING_BACK } ?: lenses.firstOrNull()
+        }
+    }
+
+    fun onLensSelected(lens: LensSwitchingProvider.LensInfo) {
+        _selectedLens.value = lens
+    }
+
+    fun onRatioToggled() {
+        _currentRatio.value = when(_currentRatio.value) {
+            AspectRatioManager.AspectRatio.RATIO_4_3 -> AspectRatioManager.AspectRatio.RATIO_16_9
+            AspectRatioManager.AspectRatio.RATIO_16_9 -> AspectRatioManager.AspectRatio.RATIO_1_1
+            AspectRatioManager.AspectRatio.RATIO_1_1 -> AspectRatioManager.AspectRatio.RATIO_4_3
+        }
+    }
+
+    fun onAdjustmentChanged(type: AdvancedSettingsRegistry.SettingType, value: Float) {
+        _settingsValues.update { it + (type to value) }
+        
+        val definition = AdvancedSettingsRegistry.ALL_SETTINGS.find { it.type == type } ?: return
+        if (!definition.isOpenGL) {
+            applyCameraSetting(type, value)
+        }
+    }
+
+    private fun applyCameraSetting(type: AdvancedSettingsRegistry.SettingType, value: Float) {
+        val current = _manualSettings.value
+        val next = when(type) {
+            AdvancedSettingsRegistry.SettingType.EV -> current.copy(exposureComp = value)
+            AdvancedSettingsRegistry.SettingType.ISO -> current.copy(iso = value.toInt())
+            AdvancedSettingsRegistry.SettingType.SHUTTER -> current.copy(shutterSpeedNs = (1_000_000_000L / value.toLong()))
+            AdvancedSettingsRegistry.SettingType.FOCUS -> current.copy(focusDistance = value)
+            AdvancedSettingsRegistry.SettingType.WB -> current.copy(whiteBalanceMode = value.toInt())
+            AdvancedSettingsRegistry.SettingType.SHARPNESS -> current.copy(sharpness = value.toInt())
+            AdvancedSettingsRegistry.SettingType.NOISE_REDUCTION -> current.copy(denoiseMode = value.toInt())
+            else -> current
+        }
+        onManualSettingChanged(next)
+    }
+
+    fun onActiveAdjustmentChanged(type: AdvancedSettingsRegistry.SettingType) {
+        _activeAdjustment.value = type
+        if (type != AdvancedSettingsRegistry.SettingType.NONE) {
+            _isFilterListVisible.value = false
+        }
+    }
+
+    fun onFilterToggleTapped() {
+        _isFilterListVisible.update { !it }
+        if (_isFilterListVisible.value) {
+            _activeAdjustment.value = AdvancedSettingsRegistry.SettingType.NONE
+        }
+    }
+
+    fun onFilterSelected(filter: FilterType) {
+        _uiState.update { it.copy(currentFilter = filter) }
+    }
+
+    fun onManualSettingChanged(settings: AdvancedParameterHandler.ManualSettings) {
+        _manualSettings.value = settings
+        _selectedLens.value?.let {
+            cameraManager.updateSettings(settings, it.logicalId)
+        }
+    }
+
+    fun onZoomChanged(zoom: Float) {
+        onManualSettingChanged(_manualSettings.value.copy(zoomRatio = zoom))
     }
 
     fun setCoachingResult(result: CoachingResult) {
@@ -70,11 +184,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onCoachingFrame(path: String) {
-        Log.d("Vantage", "onCoachingFrame: inFlight=$isCoachingInFlight ready=${gemmaEngine.isReady()} path=$path")
         if (isCoachingInFlight) return
         if (_uiState.value.readyToCapture) return
         if (!gemmaEngine.isReady()) {
-            // Engine still loading — retry after a longer delay
             scheduleNextCoachCapture(delayMs = 5000)
             return
         }
@@ -89,8 +201,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         voiceSystem.speak(signal.step)
                     }
                 }
-                // Always bump revision so the bubble flashes even when the step repeats,
-                // letting the user know Gemma re-analyzed the scene.
                 _uiState.update {
                     it.copy(
                         pendingUserActions = listOf(signal.step),
@@ -141,7 +251,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun onFilterSelected(filter: FilterType) {}
     fun onInspoPhotoSelected(photo: UnsplashPhoto) {}
 
     fun onFlashToggled() {
@@ -157,11 +266,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onMicButtonToggled() {
         if (_uiState.value.isListening) {
-            Log.d("Vantage", "Stopping voice listener")
             voiceSystem.stopListening()
             _uiState.update { it.copy(isListening = false) }
         } else {
-            Log.d("Vantage", "Starting voice listener")
             _uiState.update { it.copy(isListening = true) }
             voiceSystem.startListening(
                 onResult = { text ->
@@ -179,12 +286,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun onManualShutter() {}
+    fun onManualShutter() {
+        // Shutter logic using StandardCameraManager can be added here
+        Log.d("Vantage", "Manual shutter tapped")
+    }
+
     fun onCountdownComplete() {}
 
     override fun onCleared() {
         gemmaEngine.close()
         voiceSystem.shutdown()
+        cameraManager.stopBackgroundThread()
         super.onCleared()
     }
 }

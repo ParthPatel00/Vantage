@@ -1,7 +1,7 @@
 package com.vantage.ui.screens
 
-import android.util.Log
-import android.view.ViewGroup
+import android.graphics.SurfaceTexture
+import androidx.compose.animation.*
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -19,9 +19,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,48 +34,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FlashAuto
-import androidx.compose.material.icons.filled.FlashOff
-import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.vantage.models.AppMode
-import com.vantage.models.CameraUiState
-import com.vantage.models.ChatMessage
-import com.vantage.models.FlashMode
-import com.vantage.ui.components.MicButton
-import com.vantage.ui.components.CoachingOverlay
-import com.vantage.ui.theme.AIAccentBlue
-import com.vantage.ui.theme.Black
-import com.vantage.ui.theme.ChatBubbleBg
-import com.vantage.ui.theme.ReadyGreen
-import com.vantage.ui.theme.White
-import com.vantage.viewmodel.CameraViewModel
+import androidx.compose.foundation.layout.*
 import java.io.File
 import java.io.FileOutputStream
 import androidx.compose.runtime.collectAsState
@@ -88,10 +44,24 @@ private val BottomControlsHeight = 172.dp
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
 
-    val imageCapture = remember { ImageCapture.Builder().build() }
-    val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+    val availableLenses by viewModel.availableLenses.collectAsState()
+    val selectedLens by viewModel.selectedLens.collectAsState()
+    val currentRatio by viewModel.currentRatio.collectAsState()
+
+    val brightness by viewModel.brightness.collectAsState()
+    val contrast by viewModel.contrast.collectAsState()
+    val saturation by viewModel.saturation.collectAsState()
+    val gamma by viewModel.gamma.collectAsState()
+    val settingsValues by viewModel.settingsValues.collectAsState()
+    val activeAdjustment by viewModel.activeAdjustment.collectAsState()
+    val isFilterListVisible by viewModel.isFilterListVisible.collectAsState()
+    val manualSettings by viewModel.manualSettings.collectAsState()
+
+    var currentSurfaceTexture by remember { mutableStateOf<SurfaceTexture?>(null) }
+    var streamSize by remember { mutableStateOf<android.util.Size?>(null) }
 
     var settingsOpen by remember { mutableStateOf(false) }
     val coachCaptureSignal by viewModel.coachCaptureSignal.collectAsState()
@@ -126,36 +96,78 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
         )
     }
 
+    // Unified Camera Lifecycle Management
+    LaunchedEffect(selectedLens, currentSurfaceTexture, currentRatio) {
+        val lens = selectedLens
+        val st = currentSurfaceTexture
+        if (lens != null && st != null) {
+            viewModel.cameraManager.openCamera(lens.logicalId, currentRatio, st) { size ->
+                streamSize = size
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Black)
+            .pointerInput(Unit) {
+                detectTransformGestures { _, _, zoom, _ ->
+                    val currentZoom = manualSettings.zoomRatio ?: 1.0f
+                    // Smoothly update zoom based on pinch factor
+                    // Min zoom 0.6x (Ultra-wide), Max zoom 10x
+                    val nextZoom = (currentZoom * zoom).coerceIn(0.6f, 10.0f)
+                    if (nextZoom != currentZoom) {
+                        viewModel.onZoomChanged(nextZoom)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
     ) {
+        // Full Screen Filtered Viewport
         AndroidView(
             factory = { ctx ->
-                PreviewView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = surfaceProvider
+                FilterViewport(ctx).apply {
+                    onSurfaceReady = { st ->
+                        currentSurfaceTexture = st
                     }
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageCapture
-                    )
+                }
+            },
+            update = { view ->
+                view.setFilter(uiState.currentFilter)
+                view.setAdjustments(brightness, contrast, saturation, gamma)
+                streamSize?.let { view.setStreamSize(it) }
+                selectedLens?.let { lens ->
+                    val orientation = viewModel.cameraManager.getSensorOrientation(lens.logicalId)
+                    val isFront = lens.facing == android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT
+                    view.setSensorOrientation(orientation, isFront)
                 }
             },
             modifier = Modifier.fillMaxSize()
         )
 
+        // Top Bar
+        var settingsExpanded by remember { mutableStateOf(false) }
+        TopBarControls(
+            onSettingsToggle = { settingsExpanded = !settingsExpanded },
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding()
+        )
+
+        // Settings Dropdown
+        ProSettingsDropdown(
+            expanded = settingsExpanded,
+            activeAdjustment = activeAdjustment,
+            onAdjustmentSelected = {
+                viewModel.onActiveAdjustmentChanged(it)
+                settingsExpanded = false
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 70.dp, end = 16.dp)
+        )
+
+        // Chat bubble overlay
         // Flash toggle — top left
         IconButton(
             onClick = { viewModel.onFlashToggled() },
@@ -261,6 +273,8 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             messages = uiState.chatMessages.takeLast(3),
             modifier = Modifier
                 .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 220.dp)
                 .align(Alignment.BottomStart)
                 .padding(bottom = BottomControlsHeight + 160.dp)
         )
@@ -272,13 +286,100 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            ModeToggle(
-                currentMode = uiState.appMode,
-                onToggle = { viewModel.onModeToggled() }
+            // 0. Zoom Control (Above Mode Chips, Left Side)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+            ) {
+                ZoomControl(
+                    currentZoom = manualSettings.zoomRatio ?: 1.0f,
+                    onZoomSelected = { viewModel.onZoomChanged(it) },
+                    modifier = Modifier.align(Alignment.BottomStart)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 1. Filter Selector Strip (Above Mode Chips)
+            FilterSelectorStrip(
+                visible = isFilterListVisible,
+                currentFilter = uiState.currentFilter,
+                onFilterSelected = { viewModel.onFilterSelected(it) }
             )
+
+            // 2. Horizontal Adjustment Scale (Above Mode Chips)
+            val activeDef = AdvancedSettingsRegistry.ALL_SETTINGS.find { it.type == activeAdjustment }
+            if (activeDef != null && activeAdjustment != AdvancedSettingsRegistry.SettingType.NONE) {
+                HorizontalAdjustmentScale(
+                    type = activeAdjustment,
+                    label = activeDef.label,
+                    value = settingsValues[activeAdjustment] ?: activeDef.defaultValue,
+                    range = activeDef.range,
+                    onValueChange = { viewModel.onAdjustmentChanged(activeAdjustment, it) }
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            // 3. Mode Toggle (Above Shutter)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+            ) {
+                ModeToggle(
+                    currentMode = uiState.appMode,
+                    onToggle = { viewModel.onModeToggled() },
+                    modifier = Modifier.align(Alignment.Center)
+                )
+
+                // Filter Toggle Button (Above Mode Chips, Right Side)
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(if (isFilterListVisible) AIAccentBlue.copy(alpha = 0.4f) else White.copy(alpha = 0.2f))
+                        .clickable { viewModel.onFilterToggleTapped() }
+                        .align(Alignment.CenterEnd),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = "✦", color = White, fontSize = 24.sp)
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // 4. Bottom Controls (Shutter and Flip)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Invisible placeholder to keep shutter centered
+                Box(modifier = Modifier.size(48.dp))
+
+                ProShutterButton(
+                    onClick = { viewModel.onManualShutter() }
+                )
+
+                // Camera Flip
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(White.copy(alpha = 0.2f))
+                        .clickable {
+                            val currentFacing = selectedLens?.facing
+                            val nextFacing = if (currentFacing == android.hardware.camera2.CameraMetadata.LENS_FACING_BACK)
+                                android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT else android.hardware.camera2.CameraMetadata.LENS_FACING_BACK
+
+                            Log.d("Vantage", "Flip tapped. Current facing: $currentFacing, Target: $nextFacing")
+                            val lens = availableLenses.find { it.facing == nextFacing }
+                            if (lens != null) {
+                                Log.d("Vantage", "Switching to lens: ${lens.label} (ID: ${lens.logicalId})")
+                                viewModel.onLensSelected(lens)
+                            } else {
+                                Log.e("Vantage", "No lens found for facing $nextFacing")
             CaptureButton(
                 readyToCapture = uiState.readyToCapture,
                 onClick = {
@@ -298,10 +399,12 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                             override fun onError(exception: ImageCaptureException) {
                                 Log.e("Vantage", "Capture failed", exception)
                             }
-                        }
-                    )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text = "↺", color = White, fontSize = 24.sp)
                 }
-            )
+            }
 
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -314,12 +417,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                 .padding(24.dp)
                 .padding(bottom = 80.dp)
         )
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            cameraProviderFuture.get().unbindAll()
-        }
     }
 }
 
@@ -366,11 +463,11 @@ private fun AnimatedChatBubble(message: ChatMessage) {
 }
 
 @Composable
-private fun ModeToggle(currentMode: AppMode, onToggle: () -> Unit) {
+private fun ModeToggle(currentMode: AppMode, onToggle: () -> Unit, modifier: Modifier = Modifier) {
     val isDoItForMe = currentMode == AppMode.DO_IT_FOR_ME
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(24.dp))
             .background(White.copy(alpha = 0.15f))
             .clickable { onToggle() }
@@ -388,7 +485,7 @@ private fun ModeChip(text: String, selected: Boolean) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (selected) AIAccentBlue else Black.copy(alpha = 0f))
+            .background(if (selected) AIAccentBlue else Color.Transparent)
             .padding(horizontal = 20.dp, vertical = 10.dp)
     ) {
         Text(
