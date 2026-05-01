@@ -10,6 +10,11 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -26,18 +31,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -65,10 +76,12 @@ import com.vantage.ui.components.CoachingOverlay
 import com.vantage.ui.theme.AIAccentBlue
 import com.vantage.ui.theme.Black
 import com.vantage.ui.theme.ChatBubbleBg
+import com.vantage.ui.theme.ReadyGreen
 import com.vantage.ui.theme.White
 import com.vantage.viewmodel.CameraViewModel
 import java.io.File
 import java.io.FileOutputStream
+import androidx.compose.runtime.collectAsState
 
 private val BottomControlsHeight = 172.dp
 
@@ -80,12 +93,37 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
     val imageCapture = remember { ImageCapture.Builder().build() }
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
 
+    var settingsOpen by remember { mutableStateOf(false) }
+    val coachCaptureSignal by viewModel.coachCaptureSignal.collectAsState()
+
     LaunchedEffect(uiState.flashMode) {
         imageCapture.flashMode = when (uiState.flashMode) {
             FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
             FlashMode.ON -> ImageCapture.FLASH_MODE_ON
             FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
         }
+    }
+
+    // One capture per signal tick — ViewModel fires the next tick only after inference completes,
+    // keeping camera captures and NPU inference strictly sequential (no DSP contention).
+    LaunchedEffect(coachCaptureSignal) {
+        if (coachCaptureSignal == 0 || uiState.appMode != AppMode.COACH_ME) return@LaunchedEffect
+        imageCapture.takePicture(
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
+                    val file = File(context.cacheDir, "coach_frame.jpg")
+                    FileOutputStream(file).use { it.write(bytes) }
+                    image.close()
+                    viewModel.onCoachingFrame(file.absolutePath)
+                }
+                override fun onError(e: ImageCaptureException) {
+                    Log.e("Vantage", "Coach capture failed", e)
+                }
+            }
+        )
     }
 
     Box(
@@ -118,7 +156,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             modifier = Modifier.fillMaxSize()
         )
 
-        // Flash Toggle at the top
+        // Flash toggle — top left
         IconButton(
             onClick = { viewModel.onFlashToggled() },
             modifier = Modifier
@@ -135,18 +173,90 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             Icon(imageVector = icon, contentDescription = "Flash Mode", tint = White)
         }
 
-        // Chat bubble overlay — shows last 3 AI messages
-        // Coaching bubble + edge arrows — only in Coach Me mode.
-        // Bottom safe area keeps the bubble clear of the toggle/capture row.
+        // Settings button — top right
+        Box(
+            modifier = Modifier
+                .statusBarsPadding()
+                .padding(16.dp)
+                .align(Alignment.TopEnd)
+        ) {
+            IconButton(
+                onClick = { settingsOpen = !settingsOpen },
+                modifier = Modifier.background(Black.copy(alpha = 0.3f), CircleShape)
+            ) {
+                Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings", tint = White)
+            }
+
+            if (settingsOpen) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 52.dp)
+                        .wrapContentSize()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(ChatBubbleBg.copy(alpha = 0.92f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Speak coaching steps",
+                            color = White,
+                            fontSize = 14.sp
+                        )
+                        Switch(
+                            checked = uiState.voiceCoachEnabled,
+                            onCheckedChange = { viewModel.onVoiceCoachToggled() }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Subject input + debug info — floats below the top buttons in Coach Me mode
+        if (uiState.appMode == AppMode.COACH_ME) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(top = 68.dp, start = 16.dp, end = 16.dp)
+                    .align(Alignment.TopCenter),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SubjectInputRow(
+                    subject = uiState.coachingSubject,
+                    onSubjectChanged = { viewModel.onCoachingSubjectChanged(it) }
+                )
+                if (uiState.lastCoachDebug.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Black.copy(alpha = 0.6f))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = uiState.lastCoachDebug,
+                            color = White.copy(alpha = 0.85f),
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
+                }
+            }
+        }
+
         CoachingOverlay(
             suggestion = uiState.pendingUserActions.firstOrNull()
                 ?.takeIf { uiState.appMode == AppMode.COACH_ME },
+            revision = uiState.coachRevision,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(bottom = BottomControlsHeight)
         )
 
-        // Chat bubble overlay — last 3 AI messages, sits above the coaching bubble.
         ChatBubbleOverlay(
             messages = uiState.chatMessages.takeLast(3),
             modifier = Modifier
@@ -155,7 +265,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                 .padding(bottom = BottomControlsHeight + 160.dp)
         )
 
-        // Bottom controls — mode toggle above the capture button.
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -171,6 +280,7 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             Spacer(modifier = Modifier.height(24.dp))
 
             CaptureButton(
+                readyToCapture = uiState.readyToCapture,
                 onClick = {
                     imageCapture.takePicture(
                         ContextCompat.getMainExecutor(context),
@@ -182,11 +292,9 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                                 val file = File(context.cacheDir, "preview_frame.jpg")
                                 FileOutputStream(file).use { it.write(bytes) }
                                 image.close()
-
                                 Log.d("Vantage", "Frame captured: ${file.absolutePath} (${bytes.size} bytes)")
                                 viewModel.onCaptureButtonTapped(file.absolutePath)
                             }
-
                             override fun onError(exception: ImageCaptureException) {
                                 Log.e("Vantage", "Capture failed", exception)
                             }
@@ -293,15 +401,59 @@ private fun ModeChip(text: String, selected: Boolean) {
 }
 
 @Composable
-private fun CaptureButton(onClick: () -> Unit) {
+private fun SubjectInputRow(
+    subject: String,
+    onSubjectChanged: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = subject,
+        onValueChange = onSubjectChanged,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = {
+            Text(
+                "What are you photographing?",
+                color = White.copy(alpha = 0.6f),
+                fontSize = 13.sp
+            )
+        },
+        singleLine = true,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = White,
+            unfocusedTextColor = White,
+            focusedContainerColor = Black.copy(alpha = 0.45f),
+            unfocusedContainerColor = Black.copy(alpha = 0.35f),
+            focusedBorderColor = White.copy(alpha = 0.5f),
+            unfocusedBorderColor = White.copy(alpha = 0.25f),
+            cursorColor = White
+        ),
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
+private fun CaptureButton(readyToCapture: Boolean, onClick: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "captureReady")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween<Float>(700),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    val borderColor = if (readyToCapture) ReadyGreen.copy(alpha = pulseAlpha) else White
+    val borderWidth = if (readyToCapture) 5.dp else 4.dp
+
     Box(
         modifier = Modifier
             .size(72.dp)
             .clip(CircleShape)
-            .border(4.dp, White, CircleShape)
+            .border(borderWidth, borderColor, CircleShape)
             .clickable { onClick() }
             .padding(6.dp)
             .clip(CircleShape)
-            .background(White)
+            .background(if (readyToCapture) ReadyGreen.copy(alpha = 0.3f) else White)
     )
 }
