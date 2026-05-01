@@ -105,7 +105,8 @@ class GemmaEngine {
         imagePath: String,
         iteration: Int = 0,
         previousSettings: SceneAnalysis? = null,
-        userIntent: String? = null
+        userIntent: String? = null,
+        referenceImagePath: String? = null
     ): SceneAnalysis = withContext(Dispatchers.IO) {
         mutex.withLock {
             val eng = engine ?: return@withLock SceneAnalysis(ready = true)
@@ -121,13 +122,22 @@ class GemmaEngine {
             }
 
             val prompt = if (iteration == 0 || previousSettings == null) {
-                buildRound1Prompt(userIntent)
+                buildRound1Prompt(userIntent, hasReference = referenceImagePath != null)
             } else {
                 buildRound2Prompt(previousSettings, userIntent)
             }
 
             try {
-                val msg = Message.user(Contents.of(Content.ImageFile(imagePath), Content.Text(prompt)))
+                val contents = if (referenceImagePath != null) {
+                    Contents.of(
+                        Content.ImageFile(referenceImagePath),
+                        Content.ImageFile(imagePath),
+                        Content.Text(prompt)
+                    )
+                } else {
+                    Contents.of(Content.ImageFile(imagePath), Content.Text(prompt))
+                }
+                val msg = Message.user(contents)
                 val sb = StringBuilder()
                 conv.sendMessageAsync(msg).collect { response ->
                     val chunk = response.contents.contents
@@ -146,114 +156,35 @@ class GemmaEngine {
         }
     }
 
-    private fun buildRound1Prompt(userIntent: String? = null): String {
-        val intentBlock = if (!userIntent.isNullOrBlank()) {
-            """
-USER REQUEST: "$userIntent"
-This is the user's creative vision. It is your TOP PRIORITY. Choose the filter, color grading, contrast, saturation, and all settings to match what they described. Stick with your choice across rounds.
-
-STYLE EXAMPLES (use as starting points, adjust for the actual scene):
-- "cinematic portrait" -> filter:CINEMATIC, brightness:-0.05, contrast:1.40, saturation:0.80, gamma:1.15
-- "1980s retro look" -> filter:VINTAGE, brightness:0.05, contrast:1.15, saturation:0.70, gamma:1.20
-- "dramatic moody" -> filter:DRAMATIC, brightness:-0.10, contrast:1.55, saturation:0.75, gamma:1.10
-- "bright and airy" -> filter:MUTED, brightness:0.10, contrast:0.90, saturation:0.65, gamma:1.18
-- "vivid nature" -> filter:VIVID, brightness:0.02, contrast:1.25, saturation:1.45, gamma:1.05
+    private fun buildRound1Prompt(userIntent: String? = null, hasReference: Boolean = false): String {
+        val intentLine = if (!userIntent.isNullOrBlank()) {
+            if (hasReference) {
+                """
+USER WANTS: "$userIntent"
+REFERENCE IMAGE: The FIRST image is a reference photo showing the target style.
+The SECOND image is the camera's current frame.
+Analyze the reference image's color grading, contrast, saturation, warmth, mood, and aesthetic.
+Choose filter, brightness, contrast, saturation, gamma to make the camera frame match the reference style.
 """
+            } else {
+                "USER WANTS: \"$userIntent\". Match this mood.\n"
+            }
         } else ""
         return """
-You are an expert professional photographer and photo editor. Analyze this image carefully.
-$intentBlock
-Identify: scene type (portrait, landscape, food, indoor, night, golden hour, architecture, etc.)
-         light quality (bright sun, overcast, indoor warm, indoor cool, low light, backlit)
-         subject distance (close macro, medium 1-2m, far 3m+)
-
-PHOTOGRAPHY RULES:
-
-ISO:
-- Bright outdoor: 100-200 | Overcast/shade: 200-400 | Indoor natural: 400-800
-- Indoor artificial: 800-1600 | Night/dark: 1600-3200 (pair with noise_reduction:high_quality)
-
-SHUTTER (1/x seconds, x=the number you output):
-- Bright outdoor still: 250-500 | Normal handheld: 60-125
-- Low light still: 30-60 | Action/motion: 500-2000
-
-WHITE BALANCE:
-- Sunny: daylight | Overcast: cloudy | Shade: shade | Sunset: twilight
-- Tungsten bulbs: incandescent | Fluorescent office: fluorescent | Unknown: auto
-
-ZOOM:
-- Wide environment/group: 0.6 | Most scenes: 1.0
-- Flattering portrait (compresses background): 2.0 | Distant/telephoto: 3.0
-
-FILTER - Choose the filter that best matches the scene mood AND user request. BE BOLD:
-- NATURAL: Clean look. Use ONLY when no clear mood or style fits.
-- WARM: Golden hour, sunsets, candlelit, cozy warm lighting
-- COOL: Winter, ocean, blue hour, moody cool tones
-- VIVID: Bold colorful scenes, landscapes, flowers, markets
-- DRAMATIC: Dark moody urban, stormy, night cityscapes, high-contrast tension
-- CINEMATIC: Film/movie look, teal-orange grade, storytelling portraits
-- VINTAGE: Retro 70s/80s, faded analog, warm nostalgia
-- MUTED: Soft pastel, airy, desaturated calm, minimalist
-- NOIR: Black-and-white drama, editorial, architecture
-BE BOLD with your choice. The user expects a visible transformation.
-
-FOCUS (0=infinity/far, 20=very close/macro):
-- Landscapes/subjects >3m: 0 | Portraits 1-2m: 5-8 | Table/food ~0.5m: 12-16 | Macro <30cm: 18-20
-
-NOISE REDUCTION: off (ISO<400) | fast (ISO 400-1600) | high_quality (ISO>1600)
-SHARPNESS: off or fast for portraits | high_quality for landscapes/architecture/text
-
-BRIGHTNESS: -0.1 to +0.15 for exposure correction. Negative for moody/dramatic, positive for airy/bright.
-CONTRAST: 1.15-1.30 portraits | 1.30-1.50 landscapes/architecture | 1.50-1.80 dramatic/noir/cinematic
-SATURATION: 0.85-1.10 portraits | 1.25-1.50 vivid nature/food | 0.55-0.75 muted/cinematic/vintage
-GAMMA: 1.08-1.15 standard lift | 1.15-1.25 for faded/vintage looks | 1.0 only for noir/dramatic
-IMPORTANT: Do NOT output all-default values (brightness=0, contrast=1.0, saturation=1.0, gamma=1.0). Every photo deserves enhancement. Push your values to create a visible improvement.
-
-FLASH: "on" only if subject is in shadow in an otherwise bright scene. Default: "off".
-
-COMPOSITION:
-Detect the main subject. Output its bounding box as subject_box:[y1,x1,y2,x2] in 0-1000 coordinates.
-Output where it SHOULD be for ideal composition as suggested_box:[y1,x1,y2,x2].
-Rules: portraits on vertical thirds, landscapes horizon on horizontal third,
-       lead room in direction of gaze/motion, avoid dead-center framing.
-Output composition_tip: a short direction to the photographer (e.g. "move left", "tilt down").
-Set composition_ok:true if current framing is acceptable, false if they should reframe.
-
-This is your FIRST look at the scene. Apply your best initial settings.
-Set ready:false - you will analyze the result next round to confirm.
-
-Output ONLY a single-line JSON object, no markdown, no explanation:
-{"filter":"WARM","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.05,"contrast":1.25,"saturation":1.15,"gamma":1.10,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"move slightly left","composition_ok":true,"ready":false,"scene_description":"what you see in the scene","tip":"photography advice for this situation","reason":"brief rationale"}
+${intentLine}Analyze this photo. Output ONLY a short JSON, no explanation.
+Pick a filter: NATURAL|WARM|COOL|VIVID|DRAMATIC|CINEMATIC|VINTAGE|NOIR|KODAK_GOLD|PORTRA|FUJI_VELVIA|GOLDEN_HOUR|BLUE_HOUR|MUTED|FADE
+Set iso (100-3200), shutter (30-2000), wb (auto|daylight|cloudy|shade|incandescent|fluorescent|twilight), brightness (-0.1 to 0.1), contrast (1.1-1.6), saturation (0.6-1.4), gamma (1.0-1.2).
+Do NOT use default values. Every photo needs visible enhancement.
+{"filter":"...","iso":...,"shutter":...,"wb":"...","brightness":...,"contrast":...,"saturation":...,"gamma":...,"reason":"..."}
 """.trimIndent()
     }
 
     private fun buildRound2Prompt(prev: SceneAnalysis, userIntent: String? = null): String {
         val wbStr = wbModeToString(prev.wbMode)
-        val noiseStr = noiseModeToString(prev.noiseReductionMode)
-        val sharpStr = sharpnessModeToString(prev.sharpnessMode)
-        val intentBlock = if (!userIntent.isNullOrBlank()) {
-            "\nUSER REQUEST: \"$userIntent\"\nThis is the user's creative vision. Keep the same filter and mood you chose in round 1. Do not change the filter.\n"
-        } else ""
         return """
-You are an expert photographer. You previously applied these camera settings:
-filter=${prev.filter.name}, iso=${prev.iso}, shutter=1/${prev.shutter}s, wb=$wbStr,
-focus=${prev.focusDistance}, noise_reduction=$noiseStr, sharpness=$sharpStr,
-zoom=${prev.zoom}x, brightness=${prev.brightness}, contrast=${prev.contrast},
-saturation=${prev.saturation}, gamma=${prev.gamma}, flash=${prev.flash}
-$intentBlock
-This is a NEW frame captured WITH those settings already active on the camera.
-Evaluate carefully: Is the exposure correct? Is the color balance accurate? Is the zoom appropriate? Is the image quality good?
-
-Also re-evaluate composition. Update subject_box and suggested_box for the current frame.
-If composition has improved, set composition_ok:true. If still off, set composition_ok:false with a new tip.
-
-If YES (settings look optimal and composition is good):
-  Set ready:true. You may make minor adjustments if needed (within 20% of current values).
-If NO (something is still off):
-  Set ready:false. Output corrected settings and explain what was wrong.
-
-Output ONLY a single-line JSON object, no markdown, no explanation:
-{"filter":"NATURAL","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.0,"contrast":1.0,"saturation":1.0,"gamma":1.0,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"looks good","composition_ok":true,"ready":false,"scene_description":"what you observe","tip":"photography advice","reason":"what you adjusted"}
+Previous: filter=${prev.filter.name}, iso=${prev.iso}, shutter=${prev.shutter}, wb=$wbStr, brightness=${prev.brightness}, contrast=${prev.contrast}, saturation=${prev.saturation}, gamma=${prev.gamma}
+Is exposure/color correct now? Fine-tune if needed. Set ready:true if good. Output ONLY JSON:
+{"filter":"...","iso":...,"shutter":...,"wb":"...","brightness":...,"contrast":...,"saturation":...,"gamma":...,"ready":true,"reason":"..."}
 """.trimIndent()
     }
 
@@ -332,9 +263,11 @@ Output ONLY a single-line JSON object, no markdown, no explanation:
     private fun parseSceneAnalysis(raw: String, forceNotReady: Boolean = false): SceneAnalysis {
         val rawJson = extractFirstJson(raw)
             ?: return SceneAnalysis(ready = true, rawResponse = "NO JSON: $raw")
-        val jsonStr = rawJson.replace(Regex("""(?<=[,{])\s*""([a-z_])""")) { ",\"${it.groupValues[1]}" }
+        val jsonStr = rawJson
+            .replace(Regex("""(?<=[,{])\s*""([a-z_])""")) { ",\"${it.groupValues[1]}" }
             .replace(Regex("""^""([a-z])""")) { "\"${it.groupValues[1]}" }
             .replace("\"\"", "\"")
+            .replace(Regex(""""shutter"\s*:\s*1/(\d+)""")) { "\"shutter\":${it.groupValues[1]}" }
         Log.d("Vantage", "parseSceneAnalysis: sanitized=$jsonStr")
         return try {
             val j = JSONObject(jsonStr)

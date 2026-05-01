@@ -19,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vantage.models.EnhancementInfo
 import com.vantage.models.PhotoPair
 import com.vantage.ui.screens.CameraScreen
 import com.vantage.ui.screens.GalleryScreen
@@ -58,6 +59,7 @@ class MainActivity : ComponentActivity() {
             VantageTheme {
                 val viewModel: CameraViewModel = viewModel()
                 val uiState by viewModel.uiState.collectAsState()
+                val enhancementMetadata by viewModel.enhancementMetadata.collectAsState()
                 val scope = rememberCoroutineScope()
 
                 val pagerState = rememberPagerState(initialPage = 0) { 2 }
@@ -73,6 +75,7 @@ class MainActivity : ComponentActivity() {
                         PhotoDetailScreen(
                             photos = photos,
                             initialIndex = selectedIndex,
+                            enhancementMetadata = enhancementMetadata,
                             onBack = { selectedPhotos = null }
                         )
                     } else {

@@ -13,10 +13,14 @@ import com.vantage.api.UnsplashClientImpl
 import com.vantage.camera.standard.AspectRatioManager
 import com.vantage.contracts.IUnsplashClient
 import com.vantage.models.CameraUiState
+import com.vantage.models.EnhancementInfo
 import com.vantage.models.FilterType
 import com.vantage.models.FlashMode
 import com.vantage.models.UnsplashPhoto
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,7 +31,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import java.io.File
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -45,6 +52,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val snapshotRequests: SharedFlow<Long> = _snapshotRequests.asSharedFlow()
     private val _snapshotResults = MutableSharedFlow<String>(extraBufferCapacity = 4)
     private var lastInspoFramePath: String? = null
+
+    private var pendingReferenceJob: Deferred<Pair<String, String>?>? = null
 
     private var isLoopActive = false
     private var analysisIteration = 0
@@ -72,6 +81,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _pendingAnalysis = MutableStateFlow<SceneAnalysis?>(null)
     val pendingAnalysis: StateFlow<SceneAnalysis?> = _pendingAnalysis.asStateFlow()
 
+    private val metadataFile = File(application.filesDir, "enhancement_metadata.json")
+    private val _enhancementMetadata = MutableStateFlow(loadMetadata())
+    val enhancementMetadata: StateFlow<Map<Long, EnhancementInfo>> = _enhancementMetadata.asStateFlow()
+
     init {
         viewModelScope.launch { gemmaEngine.initialize(application) }
     }
@@ -97,9 +110,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         Log.d("Vantage", "AI shoot started, timestamp=${_captureTimestamp.value}")
         timeoutJob?.cancel()
         timeoutJob = viewModelScope.launch {
-            delay(10_000)
+            delay(15_000)
             if (isLoopActive) {
-                Log.w("Vantage", "AI analysis timed out after 10s, shooting with defaults")
+                Log.w("Vantage", "AI analysis timed out after 15s, shooting with defaults")
                 isLoopActive = false
                 _pendingAnalysis.value = SceneAnalysis(ready = true)
                 _uiState.update { it.copy(isAiActive = false) }
@@ -121,9 +134,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 Log.d("Vantage", "Sending frame to Gemma (iteration=$analysisIteration)")
+                val referenceResult = pendingReferenceJob?.let { job ->
+                    withTimeoutOrNull(6000L) { job.await() }
+                }
+                pendingReferenceJob = null
+                val referencePath = referenceResult?.first
+                val referenceImageUrl = referenceResult?.second ?: ""
+                if (referencePath != null) Log.d("Vantage", "Reference image ready: $referencePath")
                 val userIntent = _uiState.value.voicePrompt.ifBlank { null }
                 val analysis = if (gemmaEngine.isReady()) {
-                    gemmaEngine.analyzeScene(framePath, analysisIteration, lastAnalysis, userIntent)
+                    gemmaEngine.analyzeScene(
+                        framePath, analysisIteration, lastAnalysis, userIntent,
+                        referenceImagePath = if (analysisIteration == 0) referencePath else null
+                    )
                 } else {
                     Log.w("Vantage", "Gemma not ready, using defaults")
                     SceneAnalysis(ready = true, reasoning = "AI warming up")
@@ -136,8 +159,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
                 Log.d("Vantage", "Gemma result: ready=${analysis.ready} filter=${analysis.filter} reason=${analysis.reasoning}")
 
-                // Lock the filter from round 1 so round 2 can't override the creative decision
-                val correctedAnalysis = if (analysisIteration == 0) {
+                // Voice prompt override: if user explicitly asked for a style, force that filter
+                val intentFilter = if (userIntent != null) {
+                    val matched = FilterType.fromString(userIntent)
+                    if (matched != FilterType.NATURAL) matched else null
+                } else null
+
+                val correctedAnalysis = if (intentFilter != null && analysis.filter != intentFilter) {
+                    Log.d("Vantage", "Voice intent override: ${analysis.filter} -> $intentFilter (from '$userIntent')")
+                    lockedFilter = intentFilter
+                    analysis.copy(filter = intentFilter)
+                } else if (analysisIteration == 0) {
                     lockedFilter = analysis.filter
                     analysis
                 } else if (lockedFilter != null && lockedFilter != FilterType.NATURAL && analysis.filter != lockedFilter) {
@@ -180,7 +212,31 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
                 isLoopActive = false
                 timeoutJob?.cancel()
+
+                val ts = _captureTimestamp.value
+                val voicePrompt = _uiState.value.voicePrompt
+                _enhancementMetadata.update { map ->
+                    map + (ts to EnhancementInfo(
+                        filter = correctedAnalysis.filter,
+                        iso = correctedAnalysis.iso,
+                        shutter = correctedAnalysis.shutter,
+                        whiteBalance = wbModeToLabel(correctedAnalysis.wbMode),
+                        brightness = correctedAnalysis.brightness,
+                        contrast = correctedAnalysis.contrast,
+                        saturation = correctedAnalysis.saturation,
+                        gamma = correctedAnalysis.gamma,
+                        zoom = correctedAnalysis.zoom,
+                        sceneDescription = correctedAnalysis.sceneDescription,
+                        aiReasoning = correctedAnalysis.reasoning,
+                        voicePrompt = voicePrompt,
+                        photographyTip = correctedAnalysis.photographyTip,
+                        referenceImageUrl = referenceImageUrl
+                    ))
+                }
+                saveMetadata()
+
                 _uiState.update { it.copy(isAiActive = false) }
+                referencePath?.let { File(it).delete() }
                 delay(200)
                 _photoSignal.update { it + 1 }
                 analysisIteration = 0
@@ -263,11 +319,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun onVoiceResult(text: String) {
         _uiState.update { it.copy(isListening = false, voicePrompt = text) }
         Log.d("Vantage", "Voice prompt: $text")
-        // Voice goes to BOTH paths: voicePrompt for the next analyzeScene round
-        // (existing flow), AND if the transcript expresses an inspiration intent, fire the
-        // findInspirationPhotos tool now so references show up before the user even taps
-        // the AI shutter.
-        maybeRouteVoiceToInspiration(text)
+        if (!isInspirationIntent(text)) {
+            precomputeReferenceImage(text)
+        } else {
+            maybeRouteVoiceToInspiration(text)
+        }
     }
 
     fun onVoiceCancelled() {
@@ -284,23 +340,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // ─── Inspiration tool ────────────────────────────────────────────────────────────
-    // Inspiration is a parallel feature to the agentic shoot loop. Once the user picks a
-    // reference, we drop its description into voicePrompt — that way when they tap the AI
-    // shutter, analyzeScene already sees the reference as the user's creative intent.
 
-    /** Called by the screen after the inspiration snapshot lands on disk. */
     fun onInspoSnapshotCaptured(framePath: String) {
         Log.d(TAG, "Inspo snapshot captured: $framePath")
         lastInspoFramePath = framePath
         _snapshotResults.tryEmit(framePath)
     }
 
-    /** Dismiss the inspo card. Clears photos + selection so AnimatedVisibility hides it. */
     fun onInspoCardDismissed() {
         _uiState.update { it.copy(inspoPhotos = emptyList(), selectedInspoPhoto = null) }
     }
 
-    /** User tapped a reference. Show it as selected; drop a hint into voicePrompt. */
     fun onInspoPhotoSelected(photo: UnsplashPhoto) {
         _uiState.update { it.copy(selectedInspoPhoto = photo) }
         val refDesc = photo.altDescription.ifBlank { "selected Unsplash inspiration photo" }
@@ -311,11 +361,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 aiMessages = it.aiMessages + "Reference locked. Tap the AI shutter to recreate it."
             )
         }
-        Log.d(TAG, "Inspo selected: $refDesc → voicePrompt='$hint'")
+        Log.d(TAG, "Inspo selected: $refDesc -> voicePrompt='$hint'")
     }
 
-    /** Skip STT and fire the inspiration tool with a default pose query — used by
-     *  long-press on the mic for demo reliability. */
     fun triggerPoseInspiration() {
         viewModelScope.launch { launchInspirationFlow("find me poses to do") }
     }
@@ -331,8 +379,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun launchInspirationFlow(transcript: String) {
-        // Snapshot + Gemma-driven query in parallel with the Unsplash call so each scene
-        // and request produces a different result instead of the same 6 photos.
         val framePath = captureAndAwaitFrame(timeoutMs = 1500L)
         val gemmaQuery = framePath?.let { generateInspoQueryFromGemma(transcript, it) }
         val query = gemmaQuery ?: buildPoseQuery(transcript)
@@ -373,9 +419,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             Look at the camera scene and produce a CONCISE Unsplash search query (5-10
             words) for inspiration photos that match the request, the people in frame,
             the setting, lighting, and mood. For pose requests, prioritize human pose
-            references — include terms like portrait pose, posing ideas, full body
-            portrait, fashion pose, editorial pose, or environment-specific pose terms
-            (urban street, coffee shop, beach, golden hour, night, studio, mirror, car).
+            references.
             Output ONLY the query as plain text. No quotes, no labels, no explanation.
         """.trimIndent()
         return try {
@@ -435,6 +479,136 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         return (tokens + listOf("portrait pose", "photography", "reference")).joinToString(" ")
     }
 
+    private fun precomputeReferenceImage(voiceText: String) {
+        pendingReferenceJob?.cancel()
+        pendingReferenceJob = viewModelScope.async {
+            val framePath = captureAndAwaitFrame(timeoutMs = 1500L)
+            val sceneTag = if (framePath != null && gemmaEngine.isReady()) {
+                try {
+                    val raw = gemmaEngine.queryWithImage(
+                        framePath,
+                        "Describe this photo in 1-4 words. Subject and setting only. Example: woman portrait outdoor, cat sleeping sofa, city skyline night. Output ONLY the words."
+                    )
+                    if (isUsableModelResponse(raw)) {
+                        raw.lines().first().trim().take(40)
+                    } else null
+                } catch (e: Exception) {
+                    Log.w(TAG, "Scene tag failed: ${e.message}")
+                    null
+                }
+            } else null
+
+            if (sceneTag != null) Log.d(TAG, "Scene tag: '$sceneTag'")
+            fetchReferenceImage(voiceText, sceneTag)
+        }
+    }
+
+    private suspend fun fetchReferenceImage(query: String, sceneTag: String? = null): Pair<String, String>? =
+        withContext(Dispatchers.IO) {
+            try {
+                val searchQuery = buildString {
+                    append(query)
+                    if (sceneTag != null) append(" $sceneTag")
+                    append(" photography aesthetic")
+                }
+                Log.d(TAG, "Reference search: '$searchQuery'")
+                val photo = unsplashClient.searchPhotos(searchQuery, perPage = 1)
+                    .getOrNull()?.firstOrNull() ?: return@withContext null
+                val tempFile = File(
+                    getApplication<Application>().cacheDir,
+                    "ref_${System.currentTimeMillis()}.jpg"
+                )
+                val success = com.vantage.api.UnsplashApiService().downloadImage(photo.smallUrl, tempFile)
+                if (success) {
+                    Log.d(TAG, "Reference image downloaded: ${tempFile.length()} bytes")
+                    Pair(tempFile.absolutePath, photo.smallUrl)
+                } else {
+                    tempFile.delete()
+                    null
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Reference image fetch failed: ${e.message}")
+                null
+            }
+        }
+
+    private fun loadMetadata(): Map<Long, EnhancementInfo> {
+        if (!metadataFile.exists()) return emptyMap()
+        return try {
+            val root = JSONObject(metadataFile.readText())
+            val map = mutableMapOf<Long, EnhancementInfo>()
+            root.keys().forEach { key ->
+                val ts = key.toLongOrNull() ?: return@forEach
+                val j = root.getJSONObject(key)
+                map[ts] = EnhancementInfo(
+                    filter = FilterType.fromString(j.optString("filter", "NATURAL")),
+                    iso = j.optInt("iso", 200),
+                    shutter = j.optInt("shutter", 125),
+                    whiteBalance = j.optString("whiteBalance", "auto"),
+                    brightness = j.optDouble("brightness", 0.0).toFloat(),
+                    contrast = j.optDouble("contrast", 1.0).toFloat(),
+                    saturation = j.optDouble("saturation", 1.0).toFloat(),
+                    gamma = j.optDouble("gamma", 1.0).toFloat(),
+                    zoom = j.optDouble("zoom", 1.0).toFloat(),
+                    sceneDescription = j.optString("sceneDescription", ""),
+                    aiReasoning = j.optString("aiReasoning", ""),
+                    voicePrompt = j.optString("voicePrompt", ""),
+                    photographyTip = j.optString("photographyTip", ""),
+                    referenceImageUrl = j.optString("referenceImageUrl", "")
+                )
+            }
+            map
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load metadata: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun saveMetadata() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val root = JSONObject()
+                _enhancementMetadata.value.forEach { (ts, info) ->
+                    val j = JSONObject().apply {
+                        put("filter", info.filter.name)
+                        put("iso", info.iso)
+                        put("shutter", info.shutter)
+                        put("whiteBalance", info.whiteBalance)
+                        put("brightness", info.brightness.toDouble())
+                        put("contrast", info.contrast.toDouble())
+                        put("saturation", info.saturation.toDouble())
+                        put("gamma", info.gamma.toDouble())
+                        put("zoom", info.zoom.toDouble())
+                        put("sceneDescription", info.sceneDescription)
+                        put("aiReasoning", info.aiReasoning)
+                        put("voicePrompt", info.voicePrompt)
+                        put("photographyTip", info.photographyTip)
+                        put("referenceImageUrl", info.referenceImageUrl)
+                    }
+                    root.put(ts.toString(), j)
+                }
+                metadataFile.writeText(root.toString())
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to save metadata: ${e.message}")
+            }
+        }
+    }
+
+    private fun isInspirationIntent(text: String): Boolean {
+        val n = text.lowercase().trim()
+        return INSPIRATION_PHRASES.any { n.contains(it) } || INSPIRATION_ROOTS.any { n.contains(it) }
+    }
+
+    private fun wbModeToLabel(mode: Int): String = when (mode) {
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> "Incandescent"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> "Fluorescent"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> "Daylight"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "Cloudy"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "Twilight"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_SHADE -> "Shade"
+        else -> "Auto"
+    }
+
     private companion object {
         const val TAG = "Vantage"
         val INSPIRATION_PHRASES = listOf(
@@ -445,7 +619,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             "give me ideas", "reference photos",
             "how should i pose", "what pose"
         )
-        // Permissive root matching — STT often returns surprising variations.
         val INSPIRATION_ROOTS = listOf("pose", "posing", "inspir", "reference photo")
     }
 }
