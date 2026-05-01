@@ -118,13 +118,6 @@ Files with `sm8750` in the name are prioritized for Snapdragon 8 Elite optimizat
 2. Vantage shows a carousel of reference photos matching your current scene
 3. Select a pose for compositional guidance
 
-### Manual Controls
-
-- **Zoom:** Tap the zoom pills (0.6x, 1x, 2x, 3x) or pinch to zoom
-- **Flash:** Toggle flash mode (off, on, auto) via the top bar
-- **Aspect Ratio:** Switch between 4:3, 16:9, and 1:1
-- **Front/Back Camera:** Tap the flip button (bottom right)
-
 ### Gallery
 
 - Swipe left from the camera to view the gallery
