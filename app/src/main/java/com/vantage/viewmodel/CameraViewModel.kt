@@ -9,6 +9,7 @@ import com.vantage.ai.GemmaEngine
 import com.vantage.ai.SceneAnalysis
 import com.vantage.camera.standard.AspectRatioManager
 import com.vantage.models.CameraUiState
+import com.vantage.models.EnhancementInfo
 import com.vantage.models.FilterType
 import com.vantage.models.FlashMode
 import kotlinx.coroutines.Job
@@ -51,6 +52,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // Screen observes this to apply Camera2 parameters (ISO, shutter, WB, etc.)
     private val _pendingAnalysis = MutableStateFlow<SceneAnalysis?>(null)
     val pendingAnalysis: StateFlow<SceneAnalysis?> = _pendingAnalysis.asStateFlow()
+
+    // Enhancement metadata keyed by capture timestamp, for the info overlay in gallery
+    private val _enhancementMetadata = MutableStateFlow<Map<Long, EnhancementInfo>>(emptyMap())
+    val enhancementMetadata: StateFlow<Map<Long, EnhancementInfo>> = _enhancementMetadata.asStateFlow()
 
     init {
         viewModelScope.launch { gemmaEngine.initialize(application) }
@@ -116,8 +121,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
                 Log.d("Vantage", "Gemma result: ready=${analysis.ready} filter=${analysis.filter} reason=${analysis.reasoning}")
 
-                // Lock the filter from round 1 so round 2 can't override the creative decision
-                val correctedAnalysis = if (analysisIteration == 0) {
+                // Voice prompt override: if user explicitly asked for a style, force that filter
+                val intentFilter = if (userIntent != null) {
+                    val matched = FilterType.fromString(userIntent)
+                    if (matched != FilterType.NATURAL) matched else null
+                } else null
+
+                val correctedAnalysis = if (intentFilter != null && analysis.filter != intentFilter) {
+                    Log.d("Vantage", "Voice intent override: ${analysis.filter} -> $intentFilter (from '$userIntent')")
+                    lockedFilter = intentFilter
+                    analysis.copy(filter = intentFilter)
+                } else if (analysisIteration == 0) {
                     lockedFilter = analysis.filter
                     analysis
                 } else if (lockedFilter != null && lockedFilter != FilterType.NATURAL && analysis.filter != lockedFilter) {
@@ -160,6 +174,27 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
                 isLoopActive = false
                 timeoutJob?.cancel()
+
+                val ts = _captureTimestamp.value
+                val voicePrompt = _uiState.value.voicePrompt
+                _enhancementMetadata.update { map ->
+                    map + (ts to EnhancementInfo(
+                        filter = correctedAnalysis.filter,
+                        iso = correctedAnalysis.iso,
+                        shutter = correctedAnalysis.shutter,
+                        whiteBalance = wbModeToLabel(correctedAnalysis.wbMode),
+                        brightness = correctedAnalysis.brightness,
+                        contrast = correctedAnalysis.contrast,
+                        saturation = correctedAnalysis.saturation,
+                        gamma = correctedAnalysis.gamma,
+                        zoom = correctedAnalysis.zoom,
+                        sceneDescription = correctedAnalysis.sceneDescription,
+                        aiReasoning = correctedAnalysis.reasoning,
+                        voicePrompt = voicePrompt,
+                        photographyTip = correctedAnalysis.photographyTip
+                    ))
+                }
+
                 _uiState.update { it.copy(isAiActive = false) }
                 delay(200)
                 _photoSignal.update { it + 1 }
@@ -256,5 +291,15 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         gemmaEngine.close()
         super.onCleared()
+    }
+
+    private fun wbModeToLabel(mode: Int): String = when (mode) {
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> "Incandescent"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> "Fluorescent"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> "Daylight"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "Cloudy"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "Twilight"
+        android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_SHADE -> "Shade"
+        else -> "Auto"
     }
 }

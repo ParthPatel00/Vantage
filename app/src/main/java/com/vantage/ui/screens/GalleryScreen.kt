@@ -163,17 +163,19 @@ private suspend fun loadVantagePhotos(context: Context): List<PhotoPair> = withC
             for ((enhancedName, enhancedData) in enhanced) {
                 val originalName = enhancedName.replace("_enhanced", "")
                 val originalData = allFiles[originalName]
+                val captureTs = extractCaptureTimestamp(enhancedName)
                 if (originalData != null) {
-                    photos.add(PhotoPair(originalData.first, enhancedData.first, enhancedData.second))
+                    photos.add(PhotoPair(originalData.first, enhancedData.first, enhancedData.second, captureTs))
                     pairedOriginals.add(originalName)
                 } else {
-                    photos.add(PhotoPair(enhancedData.first, enhancedData.first, enhancedData.second))
+                    photos.add(PhotoPair(enhancedData.first, enhancedData.first, enhancedData.second, captureTs))
                 }
             }
 
             for ((originalName, originalData) in originals) {
                 if (originalName !in pairedOriginals) {
-                    photos.add(PhotoPair(originalData.first, originalData.first, originalData.second))
+                    val captureTs = extractCaptureTimestamp(originalName)
+                    photos.add(PhotoPair(originalData.first, originalData.first, originalData.second, captureTs))
                 }
             }
         }
@@ -183,4 +185,9 @@ private suspend fun loadVantagePhotos(context: Context): List<PhotoPair> = withC
 
     Log.d("Vantage", "Gallery: returning ${photos.size} photo pairs")
     photos
+}
+
+private fun extractCaptureTimestamp(filename: String): Long {
+    val match = Regex("""Vantage_(\d+)""").find(filename)
+    return match?.groupValues?.get(1)?.toLongOrNull() ?: 0L
 }

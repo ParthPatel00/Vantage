@@ -261,6 +261,105 @@ object LutGenerator {
                 satAdjust(rgb, 1.08f)
                 warmth(rgb, 0.02f)
             }
+            FilterType.CARTOON -> {
+                // Posterize-like: reduce tonal range, boost saturation, flatten midtones
+                for (i in 0..2) rgb[i] = (rgb[i] * 5f).toInt().toFloat() / 5f
+                satAdjust(rgb, 1.60f)
+                sCurve(rgb, 0.60f)
+                liftBlacks(rgb, 0.03f)
+            }
+            FilterType.ANIME -> {
+                // Vivid, slightly warm, high contrast, boosted highlights
+                satAdjust(rgb, 1.50f)
+                sCurve(rgb, 0.45f)
+                warmth(rgb, 0.04f)
+                channelBoost(rgb, 0, 0.03f)
+                channelBoost(rgb, 2, 0.05f)
+                // Slight posterization for cel-shaded feel
+                for (i in 0..2) rgb[i] = (rgb[i] * 8f).toInt().toFloat() / 8f
+                liftBlacks(rgb, 0.02f)
+            }
+            FilterType.SKETCH -> {
+                // High contrast B&W with inverted midtone emphasis
+                desaturate(rgb)
+                val lum = rgb[0]
+                // Push to extremes for sketch feel
+                val edge = if (lum < 0.5f) (lum * 2f).pow(2.5f) * 0.5f else 1f - ((1f - lum) * 2f).pow(2.5f) * 0.5f
+                rgb[0] = edge; rgb[1] = edge; rgb[2] = edge
+                sCurve(rgb, 0.7f)
+            }
+            FilterType.COMIC_BOOK -> {
+                // Bold posterized colors, heavy contrast, like halftone printing
+                satAdjust(rgb, 1.70f)
+                sCurve(rgb, 0.65f)
+                // Strong 4-level posterization
+                for (i in 0..2) rgb[i] = (rgb[i] * 4f).toInt().toFloat() / 4f
+                channelBoost(rgb, 0, 0.02f)
+            }
+            FilterType.OIL_PAINTING -> {
+                // Rich warm colors, slight blur-like smoothing via reduced tonal steps, high sat
+                satAdjust(rgb, 1.35f)
+                warmth(rgb, 0.08f)
+                sCurve(rgb, 0.25f)
+                // 12-level quantization for painterly smoothness
+                for (i in 0..2) rgb[i] = (rgb[i] * 12f).toInt().toFloat() / 12f
+                channelBoost(rgb, 0, 0.04f)
+                liftBlacks(rgb, 0.04f)
+            }
+            FilterType.CYBERPUNK -> {
+                // Intense magenta/cyan split, dark, neon
+                splitTone(rgb, fa(0.0f, 0.15f, 0.20f), fa(1.0f, 0.55f, 0.90f), 0.55f)
+                satAdjust(rgb, 1.30f)
+                sCurve(rgb, 0.50f)
+                channelBoost(rgb, 2, 0.10f)
+                channelBoost(rgb, 0, 0.05f)
+                gamma(rgb, 1.15f)
+            }
+            FilterType.UNDERWATER -> {
+                // Deep teal/aqua, desaturated reds, cool, murky
+                channelDim(rgb, 0, 0.15f)
+                channelBoost(rgb, 1, 0.05f)
+                channelBoost(rgb, 2, 0.12f)
+                satAdjust(rgb, 0.80f)
+                sCurve(rgb, 0.20f)
+                liftBlacks(rgb, 0.06f)
+                crushHighlights(rgb, 0.04f)
+                coolShift(rgb, 0.10f)
+            }
+            FilterType.MARS -> {
+                // Red/orange desert planet, desaturated blues/greens
+                channelBoost(rgb, 0, 0.18f)
+                channelDim(rgb, 2, 0.20f)
+                channelDim(rgb, 1, 0.05f)
+                warmth(rgb, 0.15f)
+                satAdjust(rgb, 1.10f)
+                sCurve(rgb, 0.30f)
+                splitTone(rgb, fa(0.10f, 0.03f, 0.0f), fa(1.0f, 0.80f, 0.50f), 0.35f)
+            }
+            FilterType.AURORA -> {
+                // Magical greens/purples/teals, boosted vibrance, ethereal
+                val lum = luminance(rgb)
+                if (lum < 0.4f) {
+                    channelBoost(rgb, 1, 0.12f * (1f - lum * 2.5f))
+                    channelBoost(rgb, 2, 0.08f * (1f - lum * 2.5f))
+                } else {
+                    channelBoost(rgb, 0, 0.06f * (lum - 0.4f) * 1.6f)
+                    channelBoost(rgb, 2, 0.10f * (lum - 0.4f) * 1.6f)
+                }
+                satAdjust(rgb, 1.40f)
+                sCurve(rgb, 0.30f)
+                liftBlacks(rgb, 0.03f)
+            }
+            FilterType.RADIOACTIVE -> {
+                // Toxic green glow, dark shadows, high contrast
+                channelBoost(rgb, 1, 0.20f)
+                channelDim(rgb, 0, 0.08f)
+                channelDim(rgb, 2, 0.12f)
+                satAdjust(rgb, 1.30f)
+                sCurve(rgb, 0.55f)
+                splitTone(rgb, fa(0.0f, 0.10f, 0.0f), fa(0.70f, 1.0f, 0.40f), 0.40f)
+                gamma(rgb, 1.10f)
+            }
             else -> { }
         }
     }

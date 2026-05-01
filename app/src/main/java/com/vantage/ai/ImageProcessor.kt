@@ -7,6 +7,7 @@ import jp.co.cyberagent.android.gpuimage.filter.GPUImageExposureFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageFilterGroup
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageGammaFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageHighlightShadowFilter
+import jp.co.cyberagent.android.gpuimage.filter.GPUImageLookupFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageMonochromeFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageRGBFilter
 import jp.co.cyberagent.android.gpuimage.filter.GPUImageSaturationFilter
@@ -50,6 +51,21 @@ object ImageProcessor {
             gamma = analysis.gamma
         }
 
+        val gpuImage = GPUImage(context)
+
+        // LUT-based filters need a separate pass (GPUImageLookupFilter is a TwoInputFilter
+        // that doesn't work inside GPUImageFilterGroup)
+        val lutInput = if (analysis.filter.isLutBased) {
+            val lutBitmap = LutGenerator.get(analysis.filter)
+            val lookupFilter = GPUImageLookupFilter()
+            lookupFilter.bitmap = lutBitmap
+            gpuImage.setImage(source)
+            gpuImage.setFilter(lookupFilter)
+            gpuImage.bitmapWithFilterApplied
+        } else {
+            source
+        }
+
         val filters = GPUImageFilterGroup()
 
         // Style-specific filter chain (tone curves, color grading, vignette, etc.)
@@ -81,8 +97,7 @@ object ImageProcessor {
         // Subtle sharpening for detail
         filters.addFilter(GPUImageSharpenFilter(0.3f))
 
-        val gpuImage = GPUImage(context)
-        gpuImage.setImage(source)
+        gpuImage.setImage(lutInput)
         gpuImage.setFilter(filters)
         return gpuImage.bitmapWithFilterApplied
     }
@@ -103,6 +118,10 @@ object ImageProcessor {
     }
 
     private fun addStyleFilters(group: GPUImageFilterGroup, filter: FilterType) {
+        if (filter.isLutBased) {
+            addLutExtras(group, filter)
+            return
+        }
         when (filter) {
             FilterType.CINEMATIC -> {
                 // Teal-orange split tone via tone curves
@@ -311,6 +330,44 @@ object ImageProcessor {
                 group.addFilter(GPUImageWhiteBalanceFilter(5200f, 0f))
                 group.addFilter(GPUImageHighlightShadowFilter(0.05f, 0.10f))
             }
+
+            else -> { }
+        }
+    }
+
+    private fun addLutExtras(group: GPUImageFilterGroup, filter: FilterType) {
+        when (filter) {
+            FilterType.LOMO, FilterType.BLADE_RUNNER ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0f), 0.4f, 0.65f
+                ))
+            FilterType.POLAROID, FilterType.SEVENTIES ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0f), 0.25f, 0.80f
+                ))
+            FilterType.NEON_NIGHT, FilterType.POP_ART ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0f), 0.3f, 0.75f
+                ))
+            FilterType.MOONLIGHT ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0.05f), 0.3f, 0.72f
+                ))
+            FilterType.GOLDEN_HOUR ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0.1f, 0.05f, 0f), 0.15f, 0.85f
+                ))
+            FilterType.CYBERPUNK, FilterType.RADIOACTIVE ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0f, 0f), 0.45f, 0.60f
+                ))
+            FilterType.UNDERWATER ->
+                group.addFilter(GPUImageVignetteFilter(
+                    android.graphics.PointF(0.5f, 0.5f), floatArrayOf(0f, 0.02f, 0.05f), 0.35f, 0.70f
+                ))
+            FilterType.COMIC_BOOK, FilterType.CARTOON ->
+                group.addFilter(GPUImageSharpenFilter(0.6f))
+            else -> { }
         }
     }
 }
