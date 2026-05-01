@@ -10,9 +10,13 @@ Download the latest APK from the [GitHub Releases page](https://github.com/Parth
 
 ## Team
 
+
 | Name | Email |
 |------|-------|
 | Parth Patel | patelsparth00@gmail.com |
+| Adam Christley | achristl@mtu.edu |
+| Rohit Dadlani | rohitdadlani85@gmail.com |
+| Devam Sheth | devamsheth0806@gmail.com |
 
 ## Features
 
