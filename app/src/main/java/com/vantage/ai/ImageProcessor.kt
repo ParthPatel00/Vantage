@@ -311,6 +311,10 @@ object ImageProcessor {
                 group.addFilter(GPUImageWhiteBalanceFilter(5200f, 0f))
                 group.addFilter(GPUImageHighlightShadowFilter(0.05f, 0.10f))
             }
+
+            // Film-stock filter variants on this branch don't have GPUImage style chains
+            // wired yet — render with no extra style filters until they're implemented.
+            else -> {}
         }
     }
 }

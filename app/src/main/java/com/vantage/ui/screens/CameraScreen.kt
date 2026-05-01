@@ -33,8 +33,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -92,6 +94,7 @@ import com.vantage.ai.SceneAnalysis
 import com.vantage.camera.standard.AspectRatioManager
 import com.vantage.models.CameraUiState
 import com.vantage.models.FlashMode
+import com.vantage.ui.components.InspoCard
 import com.vantage.ui.pro.FilterSelectorStrip
 import com.vantage.ui.pro.ProShutterButton
 import com.vantage.ui.theme.Black
@@ -101,6 +104,7 @@ import kotlinx.coroutines.delay
 import java.io.File
 import java.io.FileOutputStream
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTapped: () -> Unit = {}) {
     val context = LocalContext.current
@@ -151,6 +155,35 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
 
     LaunchedEffect(uiState.currentZoom) { currentZoomRef.floatValue = uiState.currentZoom }
 
+    // Inspiration tool fires snapshot requests through the ViewModel; the screen captures
+    // a fresh preview frame and reports the path back so Gemma can craft a scene-specific
+    // Unsplash query.
+    LaunchedEffect(Unit) {
+        viewModel.snapshotRequests.collect {
+            imageCapture.takePicture(
+                executor,
+                object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(image: ImageProxy) {
+                        try {
+                            val buffer = image.planes[0].buffer
+                            val bytes = ByteArray(buffer.remaining())
+                            buffer.get(bytes)
+                            val file = File(context.cacheDir, "inspo_frame.jpg")
+                            FileOutputStream(file).use { it.write(bytes) }
+                            Log.d("Vantage", "Inspo frame: ${file.absolutePath} (${bytes.size} bytes)")
+                            viewModel.onInspoSnapshotCaptured(file.absolutePath)
+                        } finally {
+                            image.close()
+                        }
+                    }
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.e("Vantage", "Inspo snapshot capture failed", exception)
+                    }
+                }
+            )
+        }
+    }
+
     LaunchedEffect(uiState.flashMode) {
         imageCapture.flashMode = when (uiState.flashMode) {
             FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
@@ -163,6 +196,9 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
         val cam = camera ?: return@LaunchedEffect
         val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10f
         val minZoom = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1f
+        // Emulator webcams report maxZoom == minZoom which makes the linear-zoom
+        // formula divide by zero and produce NaN. Skip the call instead of crashing.
+        if (maxZoom <= minZoom) return@LaunchedEffect
         val clamped = uiState.currentZoom.coerceIn(minZoom, maxZoom)
         val linear = ((clamped - minZoom) / (maxZoom - minZoom)).coerceIn(0f, 1f)
         cam.cameraControl.setLinearZoom(linear)
@@ -281,8 +317,17 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 .align(Alignment.Center)
                 .clip(RectangleShape)
         ) {
-            val cameraSelector = if (uiState.isFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
-                else CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraProviderForCheck = remember { cameraProviderFuture.get() }
+            // Fall back to whichever lens the device actually has if the requested one
+            // isn't available (e.g. AVD with only one webcam wired to the back lens).
+            val cameraSelector = run {
+                val preferred = if (uiState.isFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
+                    else CameraSelector.DEFAULT_BACK_CAMERA
+                if (cameraProviderForCheck.hasCamera(preferred)) preferred
+                else if (cameraProviderForCheck.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA))
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                else CameraSelector.DEFAULT_FRONT_CAMERA
+            }
 
             key(uiState.isFrontCamera) {
                 AndroidView(
@@ -624,30 +669,36 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = {
-                    if (uiState.isListening) {
-                        speechRecognizer.stopListening()
-                        viewModel.onVoiceCancelled()
-                    } else {
-                        viewModel.onListeningStarted()
-                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                        }
-                        speechRecognizer.startListening(intent)
-                    }
-                },
+            // Tap = STT (existing behavior). Long-press = direct fire of the inspiration
+            // tool with a default pose query, used for demo reliability when STT is flaky.
+            Box(
                 modifier = Modifier
                     .size(52.dp)
                     .background(
                         if (uiState.isListening) Color(0xFFFF4444) else White.copy(alpha = 0.1f),
                         CircleShape
                     )
+                    .combinedClickable(
+                        onClick = {
+                            if (uiState.isListening) {
+                                speechRecognizer.stopListening()
+                                viewModel.onVoiceCancelled()
+                            } else {
+                                viewModel.onListeningStarted()
+                                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                                }
+                                speechRecognizer.startListening(intent)
+                            }
+                        },
+                        onLongClick = { viewModel.triggerPoseInspiration() }
+                    ),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Mic,
-                    contentDescription = "Voice",
+                    contentDescription = "Voice (long-press for pose inspo)",
                     tint = White,
                     modifier = Modifier.size(28.dp)
                 )
@@ -673,6 +724,20 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 )
             }
         }
+
+        // Floating top-right inspiration card. Sits below the AI badge + voice pill so
+        // the existing top-right column isn't disturbed. Hidden until the inspiration
+        // tool returns photos.
+        InspoCard(
+            photos = uiState.inspoPhotos,
+            selected = uiState.selectedInspoPhoto,
+            onSelect = { viewModel.onInspoPhotoSelected(it) },
+            onDismiss = { viewModel.onInspoCardDismissed() },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 148.dp, end = 12.dp)
+        )
     }
 
     DisposableEffect(Unit) {

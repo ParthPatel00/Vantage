@@ -25,5 +25,7 @@ data class CameraUiState(
     val compositionOk: Boolean = true,
     val sceneDescription: String = "",
     val photographyTip: String = "",
-    val aiMessages: List<String> = emptyList()
+    val aiMessages: List<String> = emptyList(),
+    val inspoPhotos: List<UnsplashPhoto> = emptyList(),
+    val selectedInspoPhoto: UnsplashPhoto? = null
 )

@@ -58,6 +58,43 @@ class GemmaEngine {
     fun isReady(): Boolean = conversation != null
 
     /**
+     * Free-form image+text query. Used by the inspiration tool to ask Gemma for an
+     * Unsplash query that fits the current scene. Shares the [analyzeScene] mutex so
+     * the two paths can't trample each other's conversation state.
+     */
+    suspend fun queryWithImage(imagePath: String, prompt: String): String =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val eng = engine ?: return@withLock "Engine not ready"
+                if (!isReady()) return@withLock "Engine not ready"
+                conversation?.close()
+                conversation = null
+                val conv = try {
+                    eng.createConversation().also { conversation = it }
+                } catch (e: Exception) {
+                    Log.e("Vantage", "queryWithImage: failed to create conversation", e)
+                    return@withLock "Error: ${e.message}"
+                }
+                try {
+                    val msg = Message.user(
+                        Contents.of(Content.ImageFile(imagePath), Content.Text(prompt))
+                    )
+                    val sb = StringBuilder()
+                    conv.sendMessageAsync(msg).collect { response ->
+                        val chunk = response.contents.contents
+                            .filterIsInstance<Content.Text>()
+                            .joinToString("") { it.text }
+                        sb.append(chunk)
+                    }
+                    sb.toString().trim().ifBlank { "No response" }
+                } catch (e: Exception) {
+                    Log.e("Vantage", "queryWithImage failed", e)
+                    "Error: ${e.message}"
+                }
+            }
+        }
+
+    /**
      * Analyzes the scene and returns optimal camera settings as a [SceneAnalysis].
      *
      * @param imagePath path to the preview frame JPEG

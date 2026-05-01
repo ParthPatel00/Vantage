@@ -191,6 +191,9 @@ class FilterEngine : GLSurfaceView.Renderer {
             FilterType.DRAMATIC -> Shaders.DRAMATIC_FRAG
             FilterType.SILVERTONE -> Shaders.SILVERTONE_FRAG
             FilterType.MONO -> Shaders.MONO_FRAG
+            // Film-stock filter variants on this branch don't have GLSL shaders yet —
+            // fall through to the pass-through natural shader until they're implemented.
+            else -> Shaders.NATURAL_FRAG
         }
         
         program = createProgram(Shaders.VERTEX_SHADER, fragSource)

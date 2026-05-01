@@ -1,7 +1,8 @@
 package com.vantage.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -17,10 +18,12 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MicButton(
     isListening: Boolean,
     onToggleListening: () -> Unit,
+    onLongPress: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
@@ -32,10 +35,16 @@ fun MicButton(
                 color = if (isListening) Color.Red.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.2f),
                 shape = CircleShape
             )
-            .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onToggleListening()
-            },
+            .combinedClickable(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onToggleListening()
+                },
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongPress()
+                }
+            ),
         contentAlignment = Alignment.Center
     ) {
         Icon(
