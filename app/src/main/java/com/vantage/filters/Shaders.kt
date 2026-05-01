@@ -1,8 +1,5 @@
 package com.vantage.filters
 
-/**
- * GLSL shaders for real-time camera filters and adjustments.
- */
 object Shaders {
 
     const val VERTEX_SHADER = """
@@ -15,7 +12,6 @@ object Shaders {
         }
     """
 
-    // Common header for fragment shaders including manual adjustments
     private const val ADJUSTMENT_HEADER = """
         #extension GL_OES_EGL_image_external : require
         precision mediump float;
@@ -27,19 +23,11 @@ object Shaders {
         uniform float uGamma;
 
         vec3 applyAdjustments(vec3 rgb) {
-            // Brightness
             rgb += uBrightness;
-            
-            // Contrast
             rgb = (rgb - 0.5) * uContrast + 0.5;
-            
-            // Saturation
             float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
             rgb = mix(vec3(gray), rgb, uSaturation);
-            
-            // Gamma
             rgb = pow(max(rgb, 0.0), vec3(1.0 / uGamma));
-            
             return clamp(rgb, 0.0, 1.0);
         }
     """
@@ -78,7 +66,6 @@ object Shaders {
             vec4 color = texture2D(uTexture, vTexCoord);
             vec3 rgb = applyAdjustments(color.rgb);
             float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
-            // High contrast Noir
             gray = smoothstep(0.1, 0.9, gray);
             gl_FragColor = vec4(vec3(gray), color.a);
         }
@@ -88,7 +75,6 @@ object Shaders {
         void main() {
             vec4 color = texture2D(uTexture, vTexCoord);
             vec3 rgb = applyAdjustments(color.rgb);
-            // Boost saturation and contrast for Vivid
             float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
             rgb = mix(vec3(gray), rgb, 1.4);
             rgb = (rgb - 0.5) * 1.1 + 0.5;
@@ -96,12 +82,90 @@ object Shaders {
         }
     """
 
-    // Stubs for remaining filters to be filled with specific logic
-    const val CINEMATIC_FRAG = NATURAL_FRAG
-    const val VINTAGE_FRAG = NATURAL_FRAG
-    const val MUTED_FRAG = NATURAL_FRAG
-    const val FADE_FRAG = NATURAL_FRAG
-    const val DRAMATIC_FRAG = NATURAL_FRAG
-    const val SILVERTONE_FRAG = NATURAL_FRAG
-    const val MONO_FRAG = NOIR_FRAG
+    const val CINEMATIC_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
+            vec3 shadows = vec3(0.0, 0.05, 0.1);
+            vec3 highlights = vec3(0.1, 0.05, 0.0);
+            rgb += mix(shadows, highlights, lum);
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb = mix(vec3(gray), rgb, 0.85);
+            rgb = (rgb - 0.5) * 1.15 + 0.5;
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val VINTAGE_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            rgb.r = min(rgb.r * 1.1 + 0.06, 1.0);
+            rgb.g = rgb.g * 1.0 + 0.04;
+            rgb.b = rgb.b * 0.85 + 0.08;
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb = mix(vec3(gray), rgb, 0.8);
+            rgb = max(rgb, 0.05);
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val MUTED_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb = mix(vec3(gray), rgb, 0.6);
+            rgb = (rgb - 0.5) * 0.9 + 0.5;
+            rgb += 0.04;
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val FADE_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            rgb = (rgb - 0.5) * 0.9 + 0.5;
+            rgb = max(rgb, 0.08);
+            rgb.r += 0.02;
+            rgb.g += 0.01;
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val DRAMATIC_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb = mix(vec3(gray), rgb, 0.8);
+            rgb = smoothstep(0.05, 0.95, rgb);
+            float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb.b += (1.0 - lum) * 0.05;
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val SILVERTONE_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            rgb = mix(vec3(gray), rgb, 0.1);
+            rgb.b = min(rgb.b + 0.02, 1.0);
+            rgb = (rgb - 0.5) * 1.1 + 0.5;
+            gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), color.a);
+        }
+    """
+
+    const val MONO_FRAG = ADJUSTMENT_HEADER + """
+        void main() {
+            vec4 color = texture2D(uTexture, vTexCoord);
+            vec3 rgb = applyAdjustments(color.rgb);
+            float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
+            gl_FragColor = vec4(vec3(gray), color.a);
+        }
+    """
 }

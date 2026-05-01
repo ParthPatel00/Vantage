@@ -1,6 +1,7 @@
 package com.vantage.ai
 
 import android.content.Context
+import android.hardware.camera2.CameraMetadata
 import android.os.Environment
 import android.system.Os
 import android.util.Log
@@ -11,20 +12,19 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
+import com.vantage.models.FilterType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
-
-data class CoachingSignal(val step: String, val readyToCapture: Boolean, val prompt: String = "", val rawResponse: String = "")
+import kotlin.math.abs
 
 class GemmaEngine {
 
     private var engine: Engine? = null
     private var conversation: Conversation? = null
-    // LiteRT-LM only supports one session at a time — mutex ensures coaching and
-    // describeImage never try to use the conversation concurrently.
     private val mutex = Mutex()
 
     suspend fun initialize(context: Context) = withContext(Dispatchers.IO) {
@@ -57,16 +57,40 @@ class GemmaEngine {
 
     fun isReady(): Boolean = conversation != null
 
-    suspend fun describeImage(imagePath: String): String = withContext(Dispatchers.IO) {
+    /**
+     * Analyzes the scene and returns optimal camera settings as a [SceneAnalysis].
+     *
+     * @param imagePath path to the preview frame JPEG
+     * @param iteration 0 = cold start (no prior settings), 1+ = feedback round
+     * @param previousSettings settings applied in the previous round (null on first call)
+     */
+    suspend fun analyzeScene(
+        imagePath: String,
+        iteration: Int = 0,
+        previousSettings: SceneAnalysis? = null,
+        userIntent: String? = null
+    ): SceneAnalysis = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val conv = conversation ?: return@withLock "Engine not ready"
+            val eng = engine ?: return@withLock SceneAnalysis(ready = true)
+            if (!isReady()) return@withLock SceneAnalysis(ready = true)
+
+            conversation?.close()
+            conversation = null
+            val conv = try {
+                eng.createConversation().also { conversation = it }
+            } catch (e: Exception) {
+                Log.e("Vantage", "analyzeScene: failed to create conversation", e)
+                return@withLock SceneAnalysis(ready = true)
+            }
+
+            val prompt = if (iteration == 0 || previousSettings == null) {
+                buildRound1Prompt(userIntent)
+            } else {
+                buildRound2Prompt(previousSettings, userIntent)
+            }
+
             try {
-                val msg = Message.user(
-                    Contents.of(
-                        Content.ImageFile(imagePath),
-                        Content.Text("Describe what you see in this image in 2-3 sentences.")
-                    )
-                )
+                val msg = Message.user(Contents.of(Content.ImageFile(imagePath), Content.Text(prompt)))
                 val sb = StringBuilder()
                 conv.sendMessageAsync(msg).collect { response ->
                     val chunk = response.contents.contents
@@ -74,63 +98,276 @@ class GemmaEngine {
                         .joinToString("") { it.text }
                     sb.append(chunk)
                 }
-                sb.toString().ifBlank { "No response" }
+                var raw = sb.toString().trim()
+                raw = stripRepetition(raw)
+                Log.d("Vantage", "analyzeScene[$iteration]: raw='$raw'")
+                parseSceneAnalysis(raw, forceNotReady = iteration == 0)
             } catch (e: Exception) {
-                Log.e("Vantage", "Gemma inference failed", e)
-                "Error: ${e.message}"
+                Log.e("Vantage", "analyzeScene failed", e)
+                SceneAnalysis(ready = true, rawResponse = "ERROR: ${e.message}")
             }
         }
     }
 
-    suspend fun getCoachingStep(imagePath: String, currentStep: String?, subject: String = ""): CoachingSignal = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            val eng = engine ?: return@withLock CoachingSignal(currentStep ?: "Hold still", false)
-            if (!isReady()) return@withLock CoachingSignal(currentStep ?: "Hold still", false)
+    private fun buildRound1Prompt(userIntent: String? = null): String {
+        val intentBlock = if (!userIntent.isNullOrBlank()) {
+            """
+USER REQUEST: "$userIntent"
+This is the user's creative vision. It is your TOP PRIORITY. Choose the filter, color grading, contrast, saturation, and all settings to match what they described. Stick with your choice across rounds.
+"""
+        } else ""
+        return """
+You are an expert professional photographer. Analyze this image carefully.
+$intentBlock
+Identify: scene type (portrait, landscape, food, indoor, night, golden hour, architecture, etc.)
+         light quality (bright sun, overcast, indoor warm, indoor cool, low light, backlit)
+         subject distance (close macro, medium 1-2m, far 3m+)
 
-            // Reset to a clean context before each coaching step
-            conversation?.close()
-            val conv = try {
-                eng.createConversation().also { conversation = it }
-            } catch (e: Exception) {
-                Log.e("Vantage", "Failed to reset conversation", e)
-                return@withLock CoachingSignal(currentStep ?: "Hold still", false)
-            }
+PHOTOGRAPHY RULES:
 
-            Log.d("Vantage", "getCoachingStep: conversation ready, starting inference")
-            try {
-                val subjectLine = if (subject.isNotBlank()) "The user wants to photograph: $subject. " else ""
-                val prev = if (currentStep != null) "Last instruction: \"$currentStep\". " else ""
-                val prompt = "${subjectLine}You are a professional photography coach watching through the camera viewfinder. ${prev}" +
-                    "Look at this image carefully and output exactly one of the following — nothing else:\n" +
-                    "- The single word READY (only that word) if the subject is well-framed and the shot is worth taking now.\n" +
-                    "- A short movement instruction (4 words max) telling the user to move their camera or body. Only use: left, right, up, down, forward, back, tilt left, tilt right.\n" +
-                    "Valid examples: READY | Move left | Tilt up | Step back | Pan right | Move forward\n" +
-                    "No sentences. No explanation. No punctuation. Output the instruction only."
-                val msg = Message.user(
-                    Contents.of(
-                        Content.ImageFile(imagePath),
-                        Content.Text(prompt)
-                    )
-                )
-                val sb = StringBuilder()
-                conv.sendMessageAsync(msg).collect { response ->
-                    val chunk = response.contents.contents
-                        .filterIsInstance<Content.Text>()
-                        .joinToString("") { it.text }
-                    sb.append(chunk)
-                }
-                val response = sb.toString().trim().trimEnd('.').trimEnd('!')
-                Log.d("Vantage", "getCoachingStep: response='$response'")
-                if (response.equals("READY", ignoreCase = true)) {
-                    CoachingSignal("Tap to capture!", readyToCapture = true, prompt = prompt, rawResponse = response)
-                } else {
-                    CoachingSignal(response.ifBlank { currentStep ?: "Hold still" }, readyToCapture = false, prompt = prompt, rawResponse = response)
-                }
-            } catch (e: Exception) {
-                Log.e("Vantage", "Coaching step failed", e)
-                CoachingSignal(currentStep ?: "Hold still", false)
+ISO:
+- Bright outdoor: 100-200 | Overcast/shade: 200-400 | Indoor natural: 400-800
+- Indoor artificial: 800-1600 | Night/dark: 1600-3200 (pair with noise_reduction:high_quality)
+
+SHUTTER (1/x seconds, x=the number you output):
+- Bright outdoor still: 250-500 | Normal handheld: 60-125
+- Low light still: 30-60 | Action/motion: 500-2000
+
+WHITE BALANCE:
+- Sunny: daylight | Overcast: cloudy | Shade: shade | Sunset: twilight
+- Tungsten bulbs: incandescent | Fluorescent office: fluorescent | Unknown: auto
+
+ZOOM:
+- Wide environment/group: 0.6 | Most scenes: 1.0
+- Flattering portrait (compresses background): 2.0 | Distant/telephoto: 3.0
+
+FILTER (default NATURAL unless user requested a style):
+- NATURAL: DEFAULT. Clean, no color grading
+- WARM: Golden hour sunsets, candlelit, warm-toned scenes
+- COOL: Winter, ocean, moody blue
+- VIVID: Bold colorful landscapes, flowers, nature
+- DRAMATIC: Dark moody urban, night cityscapes, high contrast
+- CINEMATIC: Film look, teal-orange grading, movie aesthetic
+- VINTAGE: Retro 70s/80s, faded warm tones, analog film look
+- MUTED: Soft pastel, desaturated, airy
+- NOIR: Black-and-white, high contrast, editorial
+
+FOCUS (0=infinity/far, 20=very close/macro):
+- Landscapes/subjects >3m: 0 | Portraits 1-2m: 5-8 | Table/food ~0.5m: 12-16 | Macro <30cm: 18-20
+
+NOISE REDUCTION: off (ISO<400) | fast (ISO 400-1600) | high_quality (ISO>1600)
+SHARPNESS: off or fast for portraits | high_quality for landscapes/architecture/text
+
+BRIGHTNESS: +0.1 to +0.3 for dark faces or shadows | -0.2 for overexposed
+CONTRAST: 1.0-1.2 portraits | 1.2-1.5 landscapes | 1.5-2.0 dramatic/noir
+SATURATION: 0.9-1.1 portraits | 1.2-1.5 nature/food | 0.6-0.8 muted/moody
+GAMMA: 1.0 normal | 1.1-1.2 lifts midtones and shadow detail
+
+FLASH: "on" only if subject is in shadow in an otherwise bright scene. Default: "off".
+
+COMPOSITION:
+Detect the main subject. Output its bounding box as subject_box:[y1,x1,y2,x2] in 0-1000 coordinates.
+Output where it SHOULD be for ideal composition as suggested_box:[y1,x1,y2,x2].
+Rules: portraits on vertical thirds, landscapes horizon on horizontal third,
+       lead room in direction of gaze/motion, avoid dead-center framing.
+Output composition_tip: a short direction to the photographer (e.g. "move left", "tilt down").
+Set composition_ok:true if current framing is acceptable, false if they should reframe.
+
+This is your FIRST look at the scene. Apply your best initial settings.
+Set ready:false - you will analyze the result next round to confirm.
+
+Output ONLY a single-line JSON object, no markdown, no explanation:
+{"filter":"NATURAL","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.0,"contrast":1.0,"saturation":1.0,"gamma":1.0,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"move slightly left","composition_ok":true,"ready":false,"scene_description":"what you see in the scene","tip":"photography advice for this situation","reason":"brief rationale"}
+""".trimIndent()
+    }
+
+    private fun buildRound2Prompt(prev: SceneAnalysis, userIntent: String? = null): String {
+        val wbStr = wbModeToString(prev.wbMode)
+        val noiseStr = noiseModeToString(prev.noiseReductionMode)
+        val sharpStr = sharpnessModeToString(prev.sharpnessMode)
+        val intentBlock = if (!userIntent.isNullOrBlank()) {
+            "\nUSER REQUEST: \"$userIntent\"\nThis is the user's creative vision. Keep the same filter and mood you chose in round 1. Do not change the filter.\n"
+        } else ""
+        return """
+You are an expert photographer. You previously applied these camera settings:
+filter=${prev.filter.name}, iso=${prev.iso}, shutter=1/${prev.shutter}s, wb=$wbStr,
+focus=${prev.focusDistance}, noise_reduction=$noiseStr, sharpness=$sharpStr,
+zoom=${prev.zoom}x, brightness=${prev.brightness}, contrast=${prev.contrast},
+saturation=${prev.saturation}, gamma=${prev.gamma}, flash=${prev.flash}
+$intentBlock
+This is a NEW frame captured WITH those settings already active on the camera.
+Evaluate carefully: Is the exposure correct? Is the color balance accurate? Is the zoom appropriate? Is the image quality good?
+
+Also re-evaluate composition. Update subject_box and suggested_box for the current frame.
+If composition has improved, set composition_ok:true. If still off, set composition_ok:false with a new tip.
+
+If YES (settings look optimal and composition is good):
+  Set ready:true. You may make minor adjustments if needed (within 20% of current values).
+If NO (something is still off):
+  Set ready:false. Output corrected settings and explain what was wrong.
+
+Output ONLY a single-line JSON object, no markdown, no explanation:
+{"filter":"NATURAL","iso":200,"shutter":125,"wb":"daylight","focus":0,"noise_reduction":"fast","sharpness":"fast","zoom":1.0,"brightness":0.0,"contrast":1.0,"saturation":1.0,"gamma":1.0,"flash":"off","subject_box":[200,300,800,700],"suggested_box":[200,333,800,667],"composition_tip":"looks good","composition_ok":true,"ready":false,"scene_description":"what you observe","tip":"photography advice","reason":"what you adjusted"}
+""".trimIndent()
+    }
+
+    private fun JSONObject.fuzzyString(vararg keys: String, default: String = ""): String {
+        for (key in keys) {
+            val v = optString(key, "")
+            if (v.isNotBlank()) return v
+        }
+        val keySet = keys()
+        while (keySet.hasNext()) {
+            val k = keySet.next()
+            val stripped = k.trim('_')
+            if (keys.any { it == stripped }) {
+                val v = optString(k, "")
+                if (v.isNotBlank()) return v
             }
         }
+        return default
+    }
+
+    private fun JSONObject.fuzzyBoolean(vararg keys: String, default: Boolean): Boolean {
+        for (key in keys) { if (has(key)) return optBoolean(key, default) }
+        val keySet = keys()
+        while (keySet.hasNext()) {
+            val k = keySet.next()
+            val stripped = k.trim('_')
+            if (keys.any { it == stripped }) return optBoolean(k, default)
+        }
+        return default
+    }
+
+    private fun JSONObject.fuzzyArray(vararg keys: String): org.json.JSONArray? {
+        for (key in keys) { optJSONArray(key)?.let { return it } }
+        val keySet = keys()
+        while (keySet.hasNext()) {
+            val k = keySet.next()
+            val stripped = k.trim('_')
+            if (keys.any { it == stripped || k.contains(it) }) {
+                optJSONArray(k)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun stripRepetition(raw: String): String {
+        if (raw.length < 500) return raw
+        val window = 30
+        for (i in 400 until (raw.length - window).coerceAtMost(1500)) {
+            val pattern = raw.substring(i, i + window)
+            val nextOccurrence = raw.indexOf(pattern, i + window)
+            if (nextOccurrence in (i + window)..(i + window + 50)) {
+                return raw.substring(0, i)
+            }
+        }
+        return if (raw.length > 2000) raw.take(2000) else raw
+    }
+
+    private fun extractFirstJson(raw: String): String? {
+        val start = raw.indexOf('{')
+        if (start == -1) return null
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until raw.length) {
+            val c = raw[i]
+            if (escape) { escape = false; continue }
+            if (c == '\\' && inString) { escape = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (inString) continue
+            if (c == '{') depth++
+            if (c == '}') { depth--; if (depth == 0) return raw.substring(start, i + 1) }
+        }
+        return if (depth > 0) raw.substring(start) + "}" else null
+    }
+
+    private fun parseSceneAnalysis(raw: String, forceNotReady: Boolean = false): SceneAnalysis {
+        val rawJson = extractFirstJson(raw)
+            ?: return SceneAnalysis(ready = true, rawResponse = "NO JSON: $raw")
+        val jsonStr = rawJson.replace(Regex("""(?<=[,{])\s*""([a-z_])""")) { ",\"${it.groupValues[1]}" }
+            .replace(Regex("""^""([a-z])""")) { "\"${it.groupValues[1]}" }
+            .replace("\"\"", "\"")
+        Log.d("Vantage", "parseSceneAnalysis: sanitized=$jsonStr")
+        return try {
+            val j = JSONObject(jsonStr)
+            val subjectArr = j.fuzzyArray("subject_box")
+            val suggestedArr = j.fuzzyArray("suggested_box")
+            SceneAnalysis(
+                filter = FilterType.fromString(j.optString("filter", "NATURAL")),
+                iso = j.optInt("iso", 200).coerceIn(100, 3200),
+                shutter = j.optInt("shutter", 125).coerceIn(8, 4000),
+                wbMode = wbStringToMode(j.optString("wb", "auto")),
+                focusDistance = j.optDouble("focus", 0.0).toFloat().coerceIn(0f, 20f),
+                noiseReductionMode = noiseStringToMode(j.fuzzyString("noise_reduction", default = "fast")),
+                sharpnessMode = sharpnessStringToMode(j.optString("sharpness", "fast")),
+                zoom = listOf(0.6f, 1f, 2f, 3f).minByOrNull { abs(it - j.optDouble("zoom", 1.0).toFloat()) } ?: 1f,
+                brightness = j.optDouble("brightness", 0.0).toFloat().coerceIn(-2f, 2f),
+                contrast = j.optDouble("contrast", 1.0).toFloat().coerceIn(0.5f, 3f),
+                saturation = j.optDouble("saturation", 1.0).toFloat().coerceIn(0.5f, 3f),
+                gamma = j.optDouble("gamma", 1.0).toFloat().coerceIn(0.5f, 2f),
+                flash = j.optString("flash", "off"),
+                ready = if (forceNotReady) false else j.fuzzyBoolean("ready", default = false),
+                reasoning = j.fuzzyString("reason", default = ""),
+                rawResponse = raw,
+                subjectBox = if (subjectArr != null) (0 until subjectArr.length()).map { subjectArr.getInt(it) } else emptyList(),
+                suggestedBox = if (suggestedArr != null) (0 until suggestedArr.length()).map { suggestedArr.getInt(it) } else emptyList(),
+                compositionTip = j.fuzzyString("composition_tip", default = ""),
+                compositionOk = j.fuzzyBoolean("composition_ok", default = true),
+                sceneDescription = j.fuzzyString("scene_description", default = ""),
+                photographyTip = j.fuzzyString("tip", "advice", default = "")
+            )
+        } catch (e: Exception) {
+            Log.w("Vantage", "parseSceneAnalysis failed: ${e.message}")
+            SceneAnalysis(ready = true, rawResponse = "PARSE ERROR: ${e.message} | $raw")
+        }
+    }
+
+    private fun wbStringToMode(wb: String): Int = when (wb.lowercase().trim()) {
+        "incandescent", "tungsten" -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
+        "fluorescent"              -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
+        "daylight", "sunny"       -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
+        "cloudy"                   -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+        "twilight", "sunset"      -> CameraMetadata.CONTROL_AWB_MODE_TWILIGHT
+        "shade", "shadow"         -> CameraMetadata.CONTROL_AWB_MODE_SHADE
+        else                       -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+    }
+
+    private fun noiseStringToMode(s: String): Int = when (s.lowercase().trim()) {
+        "off"          -> CameraMetadata.NOISE_REDUCTION_MODE_OFF
+        "high_quality" -> CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
+        "minimal"      -> CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
+        else           -> CameraMetadata.NOISE_REDUCTION_MODE_FAST
+    }
+
+    private fun sharpnessStringToMode(s: String): Int = when (s.lowercase().trim()) {
+        "off"          -> CameraMetadata.EDGE_MODE_OFF
+        "high_quality" -> CameraMetadata.EDGE_MODE_HIGH_QUALITY
+        else           -> CameraMetadata.EDGE_MODE_FAST
+    }
+
+    private fun wbModeToString(mode: Int): String = when (mode) {
+        CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT    -> "incandescent"
+        CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT     -> "fluorescent"
+        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT        -> "daylight"
+        CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "cloudy"
+        CameraMetadata.CONTROL_AWB_MODE_TWILIGHT        -> "twilight"
+        CameraMetadata.CONTROL_AWB_MODE_SHADE           -> "shade"
+        else                                             -> "auto"
+    }
+
+    private fun noiseModeToString(mode: Int): String = when (mode) {
+        CameraMetadata.NOISE_REDUCTION_MODE_OFF          -> "off"
+        CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY -> "high_quality"
+        CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL      -> "minimal"
+        else                                              -> "fast"
+    }
+
+    private fun sharpnessModeToString(mode: Int): String = when (mode) {
+        CameraMetadata.EDGE_MODE_OFF          -> "off"
+        CameraMetadata.EDGE_MODE_HIGH_QUALITY -> "high_quality"
+        else                                  -> "fast"
     }
 
     fun close() {

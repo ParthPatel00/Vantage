@@ -7,13 +7,25 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.vantage.models.PhotoPair
 import com.vantage.ui.screens.CameraScreen
+import com.vantage.ui.screens.GalleryScreen
+import com.vantage.ui.screens.PhotoDetailScreen
 import com.vantage.ui.theme.VantageTheme
 import com.vantage.viewmodel.CameraViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -29,7 +41,8 @@ class MainActivity : ComponentActivity() {
 
         val requiredPermissions = arrayOf(
             Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_MEDIA_IMAGES
         )
 
         val missingPermissions = requiredPermissions.filter {
@@ -45,7 +58,44 @@ class MainActivity : ComponentActivity() {
             VantageTheme {
                 val viewModel: CameraViewModel = viewModel()
                 val uiState by viewModel.uiState.collectAsState()
-                CameraScreen(viewModel = viewModel, uiState = uiState)
+                val scope = rememberCoroutineScope()
+
+                val pagerState = rememberPagerState(initialPage = 0) { 2 }
+                var selectedPhoto by remember { mutableStateOf<PhotoPair?>(null) }
+
+                Crossfade(
+                    targetState = selectedPhoto,
+                    animationSpec = tween(250),
+                    label = "detail"
+                ) { photo ->
+                    if (photo != null) {
+                        PhotoDetailScreen(
+                            photoPair = photo,
+                            onBack = { selectedPhoto = null }
+                        )
+                    } else {
+                        HorizontalPager(
+                            state = pagerState,
+                            beyondViewportPageCount = 1
+                        ) { page ->
+                            when (page) {
+                                0 -> CameraScreen(
+                                    viewModel = viewModel,
+                                    uiState = uiState,
+                                    onGalleryTapped = {
+                                        scope.launch { pagerState.animateScrollToPage(1) }
+                                    }
+                                )
+                                1 -> GalleryScreen(
+                                    onBack = {
+                                        scope.launch { pagerState.animateScrollToPage(0) }
+                                    },
+                                    onPhotoClick = { pair -> selectedPhoto = pair }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

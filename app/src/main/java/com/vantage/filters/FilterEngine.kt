@@ -184,7 +184,13 @@ class FilterEngine : GLSurfaceView.Renderer {
             FilterType.COOL -> Shaders.COOL_FRAG
             FilterType.NOIR -> Shaders.NOIR_FRAG
             FilterType.VIVID -> Shaders.VIVID_FRAG
-            else -> Shaders.NATURAL_FRAG
+            FilterType.CINEMATIC -> Shaders.CINEMATIC_FRAG
+            FilterType.VINTAGE -> Shaders.VINTAGE_FRAG
+            FilterType.MUTED -> Shaders.MUTED_FRAG
+            FilterType.FADE -> Shaders.FADE_FRAG
+            FilterType.DRAMATIC -> Shaders.DRAMATIC_FRAG
+            FilterType.SILVERTONE -> Shaders.SILVERTONE_FRAG
+            FilterType.MONO -> Shaders.MONO_FRAG
         }
         
         program = createProgram(Shaders.VERTEX_SHADER, fragSource)

@@ -1,25 +1,29 @@
 package com.vantage.models
 
 import android.net.Uri
+import com.vantage.camera.standard.AspectRatioManager
 
 data class CameraUiState(
-    val isCoachingActive: Boolean = false,
-    val appMode: AppMode = AppMode.DO_IT_FOR_ME,
-    val currentFilter: FilterType = FilterType.NATURAL,
-    val chatMessages: List<ChatMessage> = emptyList(),
-    val inspoPhotos: List<UnsplashPhoto> = emptyList(),
-    val selectedInspoPhoto: UnsplashPhoto? = null,
     val flashMode: FlashMode = FlashMode.OFF,
-    val isListening: Boolean = false,
-    val pendingUserActions: List<String> = emptyList(),
-    val countdownValue: Int = 0,
-    val readyToCapture: Boolean = false,
-    val modelLoaded: Boolean = false,
-    val modelLoadProgress: Float = 0f,
+    val isFrontCamera: Boolean = false,
+    val currentRatio: AspectRatioManager.AspectRatio = AspectRatioManager.AspectRatio.RATIO_4_3,
+    val currentZoom: Float = 1f,
+    val currentFilter: FilterType = FilterType.NATURAL,
+    val brightness: Float = 0f,
+    val contrast: Float = 1f,
+    val saturation: Float = 1f,
+    val gamma: Float = 1f,
+    val isAiActive: Boolean = false,
+    val analysisIteration: Int = 0,
+    val aiReasoning: String = "",
     val lastCapturedUri: Uri? = null,
-    val errorMessage: String? = null,
-    val voiceCoachEnabled: Boolean = false,
-    val coachRevision: Int = 0,
-    val coachingSubject: String = "",
-    val lastCoachDebug: String = ""
+    val isListening: Boolean = false,
+    val voicePrompt: String = "",
+    val subjectBox: List<Int> = emptyList(),
+    val suggestedBox: List<Int> = emptyList(),
+    val compositionTip: String = "",
+    val compositionOk: Boolean = true,
+    val sceneDescription: String = "",
+    val photographyTip: String = "",
+    val aiMessages: List<String> = emptyList()
 )
