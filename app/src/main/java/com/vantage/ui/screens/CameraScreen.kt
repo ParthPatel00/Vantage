@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
@@ -82,7 +83,7 @@ import java.io.File
 import java.io.FileOutputStream
 import androidx.compose.runtime.collectAsState
 
-private val BottomControlsHeight = 210.dp
+private val BottomControlsHeight = 172.dp
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
