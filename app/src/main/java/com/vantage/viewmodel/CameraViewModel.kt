@@ -4,8 +4,8 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.vantage.VantageApplication
 import com.vantage.ai.CameraToolSet
-import com.vantage.ai.GemmaEngine
 import com.vantage.ai.ToolResult
 import com.vantage.api.UnsplashClientImpl
 import com.vantage.contracts.IUnsplashClient
@@ -35,7 +35,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
-    private val gemmaEngine = GemmaEngine()
+    // GemmaEngine lives at the application level — initialized in VantageApplication.onCreate
+    // so the model is loading before the user lands on the camera screen. We just borrow the
+    // reference here for describeImage / queryWithImage calls.
+    private val gemmaEngine = (application as VantageApplication).gemmaEngine
     private val voiceSystem = VoiceSystem(application)
     private val unsplashClient: IUnsplashClient = UnsplashClientImpl()
     private val cameraToolSet = CameraToolSet(unsplashClient)
@@ -54,8 +57,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _snapshotResults = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     init {
+        // Mirror the application-level init progress into UI state so LoadingScreen can
+        // render it and the camera screen knows when AI calls are safe.
+        val app = application as VantageApplication
         viewModelScope.launch {
-            gemmaEngine.initialize(application)
+            app.modelInitState.collect { init ->
+                _uiState.update {
+                    it.copy(
+                        modelLoadProgress = init.progress,
+                        modelLoaded = init.ready
+                    )
+                }
+            }
         }
         startFakeCoachLoop()
     }
@@ -206,9 +219,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        // GemmaEngine is owned by VantageApplication and survives ViewModel destruction
+        // (e.g. config changes), so we don't close it here.
         fakeCoachJob?.cancel()
         voiceSystem.shutdown()
-        gemmaEngine.close()
         super.onCleared()
     }
 

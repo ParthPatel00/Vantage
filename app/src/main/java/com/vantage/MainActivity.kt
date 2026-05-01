@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vantage.ui.screens.CameraScreen
+import com.vantage.ui.screens.LoadingScreen
 import com.vantage.ui.theme.VantageTheme
 import com.vantage.viewmodel.CameraViewModel
 
@@ -45,7 +46,14 @@ class MainActivity : ComponentActivity() {
             VantageTheme {
                 val viewModel: CameraViewModel = viewModel()
                 val uiState by viewModel.uiState.collectAsState()
-                CameraScreen(viewModel = viewModel, uiState = uiState)
+                if (uiState.modelLoaded) {
+                    CameraScreen(viewModel = viewModel, uiState = uiState)
+                } else {
+                    LoadingScreen(
+                        progress = uiState.modelLoadProgress,
+                        onLoaded = { /* state-driven; CameraScreen swap handled by recomposition */ }
+                    )
+                }
             }
         }
     }
