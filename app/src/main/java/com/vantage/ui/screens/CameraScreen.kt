@@ -1,49 +1,62 @@
 package com.vantage.ui.screens
 
 import android.graphics.SurfaceTexture
+import android.util.Log
+import android.view.ViewGroup
 import androidx.compose.animation.*
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
-import java.io.File
-import java.io.FileOutputStream
-import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashAuto
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import com.vantage.camera.standard.AspectRatioManager
+import com.vantage.filters.FilterViewport
+import com.vantage.settings.AdvancedSettingsRegistry
+import com.vantage.ui.pro.*
+import com.vantage.models.AppMode
+import com.vantage.models.CameraUiState
+import com.vantage.models.ChatMessage
+import com.vantage.models.FlashMode
+import com.vantage.ui.components.MicButton
+import com.vantage.ui.components.CoachingOverlay
+import com.vantage.ui.theme.AIAccentBlue
+import com.vantage.ui.theme.Black
+import com.vantage.ui.theme.ChatBubbleBg
+import com.vantage.ui.theme.ReadyGreen
+import com.vantage.ui.theme.White
+import com.vantage.viewmodel.CameraViewModel
+import kotlinx.coroutines.delay
 
 private val BottomControlsHeight = 172.dp
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
-    val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
 
@@ -64,37 +77,16 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
     var streamSize by remember { mutableStateOf<android.util.Size?>(null) }
 
     var settingsOpen by remember { mutableStateOf(false) }
-    val coachCaptureSignal by viewModel.coachCaptureSignal.collectAsState()
 
-    LaunchedEffect(uiState.flashMode) {
-        imageCapture.flashMode = when (uiState.flashMode) {
-            FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
-            FlashMode.ON -> ImageCapture.FLASH_MODE_ON
-            FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+    // Auto-dismiss Quick Settings after 10 seconds
+    LaunchedEffect(settingsOpen) {
+        if (settingsOpen) {
+            delay(10000)
+            settingsOpen = false
         }
     }
 
-    // One capture per signal tick — ViewModel fires the next tick only after inference completes,
-    // keeping camera captures and NPU inference strictly sequential (no DSP contention).
-    LaunchedEffect(coachCaptureSignal) {
-        if (coachCaptureSignal == 0 || uiState.appMode != AppMode.COACH_ME) return@LaunchedEffect
-        imageCapture.takePicture(
-            ContextCompat.getMainExecutor(context),
-            object : ImageCapture.OnImageCapturedCallback() {
-                override fun onCaptureSuccess(image: ImageProxy) {
-                    val buffer = image.planes[0].buffer
-                    val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-                    val file = File(context.cacheDir, "coach_frame.jpg")
-                    FileOutputStream(file).use { it.write(bytes) }
-                    image.close()
-                    viewModel.onCoachingFrame(file.absolutePath)
-                }
-                override fun onError(e: ImageCaptureException) {
-                    Log.e("Vantage", "Coach capture failed", e)
-                }
-            }
-        )
-    }
+    val coachCaptureSignal by viewModel.coachCaptureSignal.collectAsState()
 
     // Unified Camera Lifecycle Management
     LaunchedEffect(selectedLens, currentSurfaceTexture, currentRatio) {
@@ -107,6 +99,14 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
         }
     }
 
+    // Capture logic integration for Coaching
+    LaunchedEffect(coachCaptureSignal) {
+        if (coachCaptureSignal == 0 || uiState.appMode != AppMode.COACH_ME) return@LaunchedEffect
+        viewModel.cameraManager.takePicture { file ->
+            viewModel.onCoachingFrame(file.absolutePath)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -114,8 +114,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
             .pointerInput(Unit) {
                 detectTransformGestures { _, _, zoom, _ ->
                     val currentZoom = manualSettings.zoomRatio ?: 1.0f
-                    // Smoothly update zoom based on pinch factor
-                    // Min zoom 0.6x (Ultra-wide), Max zoom 10x
                     val nextZoom = (currentZoom * zoom).coerceIn(0.6f, 10.0f)
                     if (nextZoom != currentZoom) {
                         viewModel.onZoomChanged(nextZoom)
@@ -148,6 +146,31 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
 
         // Top Bar
         var settingsExpanded by remember { mutableStateOf(false) }
+
+        // Auto-dismiss Pro Settings Dropdown after 10 seconds
+        LaunchedEffect(settingsExpanded) {
+            if (settingsExpanded) {
+                delay(10000)
+                settingsExpanded = false
+            }
+        }
+
+        // Auto-dismiss active adjustment scale after 10 seconds
+        LaunchedEffect(activeAdjustment) {
+            if (activeAdjustment != AdvancedSettingsRegistry.SettingType.NONE) {
+                delay(10000)
+                viewModel.onActiveAdjustmentChanged(AdvancedSettingsRegistry.SettingType.NONE)
+            }
+        }
+
+        // Auto-dismiss filter list after 10 seconds
+        LaunchedEffect(isFilterListVisible) {
+            if (isFilterListVisible) {
+                delay(10000)
+                viewModel.onFilterToggleTapped()
+            }
+        }
+
         TopBarControls(
             onSettingsToggle = { settingsExpanded = !settingsExpanded },
             modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding()
@@ -167,42 +190,24 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                 .padding(top = 70.dp, end = 16.dp)
         )
 
-        // Chat bubble overlay
-        // Flash toggle — top left
-        IconButton(
-            onClick = { viewModel.onFlashToggled() },
-            modifier = Modifier
-                .statusBarsPadding()
-                .padding(16.dp)
-                .align(Alignment.TopStart)
-                .background(Black.copy(alpha = 0.3f), CircleShape)
-        ) {
-            val icon = when (uiState.flashMode) {
-                FlashMode.OFF -> Icons.Default.FlashOff
-                FlashMode.ON -> Icons.Default.FlashOn
-                FlashMode.AUTO -> Icons.Default.FlashAuto
-            }
-            Icon(imageVector = icon, contentDescription = "Flash Mode", tint = White)
-        }
-
-        // Settings button — top right
+        // Quick Settings button — top left
         Box(
             modifier = Modifier
                 .statusBarsPadding()
                 .padding(16.dp)
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopStart)
         ) {
             IconButton(
                 onClick = { settingsOpen = !settingsOpen },
                 modifier = Modifier.background(Black.copy(alpha = 0.3f), CircleShape)
             ) {
-                Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings", tint = White)
+                Icon(imageVector = Icons.Default.Settings, contentDescription = "Quick Settings", tint = White)
             }
 
             if (settingsOpen) {
                 Box(
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
+                        .align(Alignment.TopStart)
                         .padding(top = 52.dp)
                         .wrapContentSize()
                         .clip(RoundedCornerShape(16.dp))
@@ -275,8 +280,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 220.dp)
-                .align(Alignment.BottomStart)
-                .padding(bottom = BottomControlsHeight + 160.dp)
         )
 
         Column(
@@ -349,20 +352,24 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // 4. Bottom Controls (Shutter and Flip)
+            // 4. Bottom Controls (Mic, Shutter, and Flip)
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Invisible placeholder to keep shutter centered
-                Box(modifier = Modifier.size(48.dp))
+                // Mic Button (Left of shutter)
+                MicButton(
+                    isListening = uiState.isListening,
+                    onToggleListening = { viewModel.onMicButtonToggled() },
+                    modifier = Modifier.size(48.dp)
+                )
 
                 ProShutterButton(
                     onClick = { viewModel.onManualShutter() }
                 )
 
-                // Camera Flip
+                // Camera Flip (Right of shutter)
                 Box(
                     modifier = Modifier
                         .size(48.dp)
@@ -373,31 +380,9 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
                             val nextFacing = if (currentFacing == android.hardware.camera2.CameraMetadata.LENS_FACING_BACK)
                                 android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT else android.hardware.camera2.CameraMetadata.LENS_FACING_BACK
 
-                            Log.d("Vantage", "Flip tapped. Current facing: $currentFacing, Target: $nextFacing")
                             val lens = availableLenses.find { it.facing == nextFacing }
                             if (lens != null) {
-                                Log.d("Vantage", "Switching to lens: ${lens.label} (ID: ${lens.logicalId})")
                                 viewModel.onLensSelected(lens)
-                            } else {
-                                Log.e("Vantage", "No lens found for facing $nextFacing")
-            CaptureButton(
-                readyToCapture = uiState.readyToCapture,
-                onClick = {
-                    imageCapture.takePicture(
-                        ContextCompat.getMainExecutor(context),
-                        object : ImageCapture.OnImageCapturedCallback() {
-                            override fun onCaptureSuccess(image: ImageProxy) {
-                                val buffer = image.planes[0].buffer
-                                val bytes = ByteArray(buffer.remaining())
-                                buffer.get(bytes)
-                                val file = File(context.cacheDir, "preview_frame.jpg")
-                                FileOutputStream(file).use { it.write(bytes) }
-                                image.close()
-                                Log.d("Vantage", "Frame captured: ${file.absolutePath} (${bytes.size} bytes)")
-                                viewModel.onCaptureButtonTapped(file.absolutePath)
-                            }
-                            override fun onError(exception: ImageCaptureException) {
-                                Log.e("Vantage", "Capture failed", exception)
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -408,15 +393,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
 
             Spacer(modifier = Modifier.height(32.dp))
         }
-
-        MicButton(
-            isListening = uiState.isListening,
-            onToggleListening = { viewModel.onMicButtonToggled() },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(24.dp)
-                .padding(bottom = 80.dp)
-        )
     }
 }
 
@@ -524,33 +500,5 @@ private fun SubjectInputRow(
             cursorColor = White
         ),
         shape = RoundedCornerShape(24.dp)
-    )
-}
-
-@Composable
-private fun CaptureButton(readyToCapture: Boolean, onClick: () -> Unit) {
-    val infiniteTransition = rememberInfiniteTransition(label = "captureReady")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween<Float>(700),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
-
-    val borderColor = if (readyToCapture) ReadyGreen.copy(alpha = pulseAlpha) else White
-    val borderWidth = if (readyToCapture) 5.dp else 4.dp
-
-    Box(
-        modifier = Modifier
-            .size(72.dp)
-            .clip(CircleShape)
-            .border(borderWidth, borderColor, CircleShape)
-            .clickable { onClick() }
-            .padding(6.dp)
-            .clip(CircleShape)
-            .background(if (readyToCapture) ReadyGreen.copy(alpha = 0.3f) else White)
     )
 }

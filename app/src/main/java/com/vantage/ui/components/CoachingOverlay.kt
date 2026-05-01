@@ -6,7 +6,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -55,16 +54,16 @@ private enum class Direction(val glyph: String) {
 private fun directionFor(text: String): Direction? {
     val t = text.lowercase()
     return when {
-        "rotate left" in t || "tilt left" in t -> Direction.ROTATE_LEFT
-        "rotate right" in t || "tilt right" in t -> Direction.ROTATE_RIGHT
-        "zoom in" in t || "closer" in t || "step forward" in t || "move forward" in t -> Direction.ZOOM_IN
-        "zoom out" in t || "step back" in t || "back up" in t || "move back" in t -> Direction.ZOOM_OUT
-        "tilt down" in t || "angle down" in t || "lower" in t -> Direction.DOWN
-        "tilt up" in t || "angle up" in t || "raise" in t -> Direction.UP
-        "move left" in t || "pan left" in t || " left" in t -> Direction.LEFT
-        "move right" in t || "pan right" in t || " right" in t -> Direction.RIGHT
-        " up" in t -> Direction.UP
-        " down" in t -> Direction.DOWN
+        "tilt left" in t || "rotate left" in t -> Direction.ROTATE_LEFT
+        "tilt right" in t || "rotate right" in t -> Direction.ROTATE_RIGHT
+        "tilt up" in t || "angle up" in t -> Direction.UP
+        "tilt down" in t || "angle down" in t -> Direction.DOWN
+        "left" in t -> Direction.LEFT
+        "right" in t -> Direction.RIGHT
+        "up" in t -> Direction.UP
+        "down" in t -> Direction.DOWN
+        "forward" in t || "closer" in t || "zoom in" in t -> Direction.ZOOM_IN
+        "back" in t || "zoom out" in t -> Direction.ZOOM_OUT
         else -> null
     }
 }
@@ -96,77 +95,81 @@ private fun CoachingContent(text: String, revision: Int) {
     val direction = directionFor(text)
 
     Box(modifier = Modifier.fillMaxSize()) {
-        when (direction) {
-            Direction.DOWN -> {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    EdgeArrow(direction = Direction.DOWN)
-                    SuggestionBubble(text = text, revision = revision)
-                }
-            }
-            Direction.UP, Direction.LEFT, Direction.RIGHT -> {
-                EdgeArrow(
-                    direction = direction,
-                    modifier = Modifier.align(arrowEdgeFor(direction)!!).padding(edgePadding(direction))
-                )
-                SuggestionBubble(
-                    text = text,
-                    revision = revision,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp)
-                )
-            }
-            else -> {
-                SuggestionBubble(
-                    text = text,
-                    revision = revision,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp, start = 24.dp, end = 24.dp)
-                )
-            }
+        if (direction != null) {
+            val alignment = arrowEdgeFor(direction) ?: Alignment.Center
+            EdgeArrow(
+                direction = direction,
+                revision = revision,
+                modifier = Modifier
+                    .align(alignment)
+                    .padding(edgePadding(direction))
+            )
         }
+
+        SuggestionBubble(
+            text = text,
+            revision = revision,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp, start = 24.dp, end = 24.dp)
+        )
     }
 }
 
 @Composable
-private fun EdgeArrow(direction: Direction, modifier: Modifier = Modifier) {
+private fun EdgeArrow(direction: Direction, revision: Int, modifier: Modifier = Modifier) {
+    val scale = remember { Animatable(1f) }
+
+    LaunchedEffect(revision) {
+        if (revision == 0) return@LaunchedEffect
+        scale.snapTo(0.7f)
+        scale.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessLow
+            )
+        )
+    }
+
     Text(
-        modifier = modifier,
+        modifier = modifier.graphicsLayer { 
+            scaleX = scale.value
+            scaleY = scale.value
+        },
         text = direction.glyph,
         style = TextStyle(
             color = CoachingAmber,
-            fontSize = 64.sp,
+            fontSize = 84.sp,
             fontWeight = FontWeight.Black,
             shadow = Shadow(
                 color = Color.Black.copy(alpha = 0.85f),
-                offset = Offset(0f, 2f),
-                blurRadius = 10f
+                offset = Offset(0f, 4f),
+                blurRadius = 15f
             )
         )
     )
 }
 
-// DOWN intentionally returns null — the bubble at the bottom already communicates
-// the direction; stacking an arrow below it looked cluttered against the controls.
 private fun arrowEdgeFor(direction: Direction?): Alignment? = when (direction) {
     Direction.UP -> Alignment.TopCenter
+    Direction.DOWN -> Alignment.Center
     Direction.LEFT -> Alignment.CenterStart
     Direction.RIGHT -> Alignment.CenterEnd
+    Direction.BACK -> Alignment.Center
+    Direction.FORWARD -> Alignment.Center
+    Direction.ROTATE_LEFT -> Alignment.Center
+    Direction.ROTATE_RIGHT -> Alignment.Center
+    Direction.ZOOM_IN -> Alignment.Center
+    Direction.ZOOM_OUT -> Alignment.Center
     else -> null
 }
 
 private fun edgePadding(direction: Direction): androidx.compose.foundation.layout.PaddingValues =
     when (direction) {
-        Direction.UP -> androidx.compose.foundation.layout.PaddingValues(top = 32.dp)
-        Direction.LEFT -> androidx.compose.foundation.layout.PaddingValues(start = 24.dp)
-        Direction.RIGHT -> androidx.compose.foundation.layout.PaddingValues(end = 24.dp)
+        Direction.UP -> androidx.compose.foundation.layout.PaddingValues(top = 80.dp)
+        Direction.LEFT -> androidx.compose.foundation.layout.PaddingValues(start = 32.dp)
+        Direction.RIGHT -> androidx.compose.foundation.layout.PaddingValues(end = 32.dp)
         else -> androidx.compose.foundation.layout.PaddingValues(0.dp)
     }
 

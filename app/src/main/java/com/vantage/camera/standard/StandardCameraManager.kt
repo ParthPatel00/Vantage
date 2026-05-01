@@ -4,10 +4,15 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
+import android.graphics.ImageFormat
+import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Size
 import android.view.Surface
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
@@ -23,6 +28,8 @@ class StandardCameraManager(private val context: Context) {
     
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
+    
+    private var imageReader: ImageReader? = null
     
     private val cameraOpenCloseLock = Semaphore(1)
 
@@ -102,15 +109,23 @@ class StandardCameraManager(private val context: Context) {
 
     private fun createCaptureSession(device: CameraDevice, surface: Surface, onReady: () -> Unit) {
         try {
+            // Initialize ImageReader for capturing photos
+            val chars = cameraManager.getCameraCharacteristics(device.id)
+            val configMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val largest = configMap?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height } ?: Size(1920, 1080)
+            
+            imageReader = ImageReader.newInstance(largest.width, largest.height, ImageFormat.JPEG, 2)
+            
             previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(surface)
             }
 
-            device.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+            val targets = listOf(surface, imageReader!!.surface)
+
+            device.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
-                        // Default to continuous auto-focus
                         previewRequestBuilder?.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         session.setRepeatingRequest(previewRequestBuilder!!.build(), null, backgroundHandler)
                         onReady()
@@ -125,6 +140,45 @@ class StandardCameraManager(private val context: Context) {
             }, backgroundHandler)
         } catch (e: Exception) {
             Log.e("StandardCameraManager", "Failed to create capture session", e)
+        }
+    }
+
+    fun takePicture(onImageSaved: (File) -> Unit) {
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
+        val reader = imageReader ?: return
+
+        try {
+            val captureBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(reader.surface)
+                // Use same settings as preview
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            }
+
+            reader.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage()
+                val buffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                image.close()
+
+                val file = File(context.cacheDir, "captured_image.jpg")
+                FileOutputStream(file).use { it.write(bytes) }
+                onImageSaved(file)
+            }, backgroundHandler)
+
+            session.stopRepeating()
+            session.abortCaptures()
+            session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    // Resume preview
+                    previewRequestBuilder?.let {
+                        session.setRepeatingRequest(it.build(), null, backgroundHandler)
+                    }
+                }
+            }, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e("StandardCameraManager", "Failed to take picture", e)
         }
     }
 
