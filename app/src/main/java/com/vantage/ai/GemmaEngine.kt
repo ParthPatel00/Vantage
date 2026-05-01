@@ -49,13 +49,16 @@ class GemmaEngine {
         Log.d("Vantage", "Gemma engine ready")
     }
 
-    suspend fun describeImage(imagePath: String): String = withContext(Dispatchers.IO) {
+    suspend fun describeImage(imagePath: String): String =
+        queryWithImage(imagePath, "Describe what you see in this image in 2-3 sentences.")
+
+    suspend fun queryWithImage(imagePath: String, prompt: String): String = withContext(Dispatchers.IO) {
         val conv = conversation ?: return@withContext "Engine not ready"
         try {
             val userMessage = Message.user(
                 Contents.of(
                     Content.ImageFile(imagePath),
-                    Content.Text("Describe what you see in this image in 2-3 sentences.")
+                    Content.Text(prompt)
                 )
             )
             val sb = StringBuilder()
@@ -71,6 +74,8 @@ class GemmaEngine {
             "Error: ${e.message}"
         }
     }
+
+    fun isReady(): Boolean = conversation != null
 
     fun close() {
         conversation?.close()

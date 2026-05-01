@@ -62,6 +62,7 @@ import com.vantage.models.ChatMessage
 import com.vantage.models.FlashMode
 import com.vantage.ui.components.MicButton
 import com.vantage.ui.components.CoachingOverlay
+import com.vantage.ui.components.InspoCard
 import com.vantage.ui.theme.AIAccentBlue
 import com.vantage.ui.theme.Black
 import com.vantage.ui.theme.ChatBubbleBg
@@ -201,10 +202,24 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState) {
         MicButton(
             isListening = uiState.isListening,
             onToggleListening = { viewModel.onMicButtonToggled() },
+            onLongPress = { viewModel.triggerPoseInspiration() },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(24.dp)
                 .padding(bottom = 80.dp)
+        )
+
+        // Floating top-right inspiration card. Only renders when inspoPhotos isn't empty.
+        // Sits opposite the flash button in the top-left, with statusBarsPadding so it
+        // never tucks under the system bar.
+        InspoCard(
+            photos = uiState.inspoPhotos,
+            selected = uiState.selectedInspoPhoto,
+            onSelect = { viewModel.onInspoPhotoSelected(it) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 12.dp)
         )
     }
 

@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Read API keys from local.properties (git-ignored) so devs don't have to pass them
+// via -P on every build. Falls back to gradle.properties / -P / system props if not set.
+val localProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.reader().use { load(it) }
+}
+fun secret(name: String): String =
+    localProperties.getProperty(name) ?: (project.findProperty(name) as String?) ?: ""
 
 android {
     namespace = "com.vantage"
@@ -17,14 +28,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
 
-        buildConfigField(
-            "String", "UNSPLASH_ACCESS_KEY",
-            "\"${project.findProperty("UNSPLASH_ACCESS_KEY") ?: ""}\""
-        )
-        buildConfigField(
-            "String", "ELEVENLABS_API_KEY",
-            "\"${project.findProperty("ELEVENLABS_API_KEY") ?: ""}\""
-        )
+        buildConfigField("String", "UNSPLASH_ACCESS_KEY", "\"${secret("UNSPLASH_ACCESS_KEY")}\"")
+        buildConfigField("String", "ELEVENLABS_API_KEY", "\"${secret("ELEVENLABS_API_KEY")}\"")
     }
 
     buildTypes {
