@@ -301,6 +301,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onZoomSelected(zoom: Float) {
+        Log.d("Vantage", "Zoom selected: $zoom")
         _uiState.update { it.copy(currentZoom = zoom) }
     }
 

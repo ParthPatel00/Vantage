@@ -140,7 +140,10 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                         ?.firstOrNull() ?: ""
                     viewModel.onVoiceResult(text)
                 }
-                override fun onError(error: Int) { viewModel.onVoiceCancelled() }
+                override fun onError(error: Int) {
+                    Log.e("Vantage", "Speech recognition error: $error")
+                    viewModel.onVoiceCancelled()
+                }
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(rmsdB: Float) {}
@@ -193,11 +196,13 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
     }
 
     LaunchedEffect(uiState.currentZoom) {
-        val cam = camera ?: return@LaunchedEffect
+        val cam = camera ?: run {
+            Log.w("Vantage", "Zoom: camera is null")
+            return@LaunchedEffect
+        }
         val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10f
         val minZoom = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1f
-        // Emulator webcams report maxZoom == minZoom which makes the linear-zoom
-        // formula divide by zero and produce NaN. Skip the call instead of crashing.
+        Log.d("Vantage", "Zoom applying: requested=${uiState.currentZoom} min=$minZoom max=$maxZoom")
         if (maxZoom <= minZoom) return@LaunchedEffect
         val clamped = uiState.currentZoom.coerceIn(minZoom, maxZoom)
         val linear = ((clamped - minZoom) / (maxZoom - minZoom)).coerceIn(0f, 1f)
@@ -368,11 +373,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 )
             }
 
-            // Filter color overlay
-            val filterOverlay = filterOverlayColor(uiState.currentFilter)
-            if (filterOverlay != Color.Transparent) {
-                Box(modifier = Modifier.fillMaxSize().background(filterOverlay))
-            }
 
             // Grid lines only - clean, no bounding boxes
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -438,37 +438,14 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             }
         }
 
-        // === AI BADGE (top-right) ===
-        val infiniteTransition = rememberInfiniteTransition(label = "aiBadge")
-        val pulseAlpha by infiniteTransition.animateFloat(
-            initialValue = 0.6f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
-            label = "pulse"
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 68.dp, end = 16.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Black.copy(alpha = if (uiState.isAiActive) 0.7f * pulseAlpha else 0.5f))
-                .padding(horizontal = 14.dp, vertical = 7.dp)
-        ) {
-            Text(
-                text = "AI  ${uiState.currentFilter.displayName}",
-                color = if (uiState.isAiActive) Color(0xFFFFE57F) else White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-        }
 
-        // === VOICE PROMPT PILL (below AI badge) ===
+        // === VOICE PROMPT PILL (top right, below settings) ===
         if (uiState.voicePrompt.isNotBlank() || uiState.isListening) {
             Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
-                    .padding(top = 100.dp, end = 16.dp, start = 80.dp)
+                    .padding(top = 68.dp, end = 16.dp, start = 80.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(
                         if (uiState.isListening) Color(0xFFFF4444).copy(alpha = 0.7f)
@@ -499,6 +476,13 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                 }
             }
         }
+
+        val infiniteTransition = rememberInfiniteTransition(label = "aiBadge")
+        val pulseAlpha by infiniteTransition.animateFloat(
+            initialValue = 0.6f, targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+            label = "pulse"
+        )
 
         // === AI THINKING CARD (single clean card, no clutter) ===
         var dotCount by remember { mutableIntStateOf(0) }
@@ -562,39 +546,41 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
                     )
                 }
 
-                // Scene description
-                if (uiState.sceneDescription.isNotBlank()) {
-                    Text(
-                        text = uiState.sceneDescription,
-                        color = White.copy(alpha = 0.85f),
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        maxLines = 3
-                    )
-                }
-
-                // Composition tip
-                if (uiState.compositionTip.isNotBlank()) {
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 4.dp)
-                                .size(6.dp)
-                                .background(
-                                    if (uiState.compositionOk) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                                    CircleShape
-                                )
-                        )
+                if (uiState.isAiActive) {
+                    // Scene description
+                    if (uiState.sceneDescription.isNotBlank()) {
                         Text(
-                            text = uiState.compositionTip,
-                            color = if (uiState.compositionOk) Color(0xFFA5D6A7) else Color(0xFFFFCC80),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp,
-                            maxLines = 2
+                            text = uiState.sceneDescription,
+                            color = White.copy(alpha = 0.85f),
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            maxLines = 3
                         )
+                    }
+
+                    // Composition tip
+                    if (uiState.compositionTip.isNotBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .size(6.dp)
+                                    .background(
+                                        if (uiState.compositionOk) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                        CircleShape
+                                    )
+                            )
+                            Text(
+                                text = uiState.compositionTip,
+                                color = if (uiState.compositionOk) Color(0xFFA5D6A7) else Color(0xFFFFCC80),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                maxLines = 2
+                            )
+                        }
                     }
                 }
 
@@ -669,8 +655,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Tap = STT (existing behavior). Long-press = direct fire of the inspiration
-            // tool with a default pose query, used for demo reliability when STT is flaky.
             Box(
                 modifier = Modifier
                     .size(52.dp)
@@ -747,20 +731,6 @@ fun CameraScreen(viewModel: CameraViewModel, uiState: CameraUiState, onGalleryTa
     }
 }
 
-private fun filterOverlayColor(filter: com.vantage.models.FilterType): Color = when (filter) {
-    com.vantage.models.FilterType.WARM -> Color(0x30FF8800)
-    com.vantage.models.FilterType.COOL -> Color(0x300066CC)
-    com.vantage.models.FilterType.NOIR -> Color(0x50000000)
-    com.vantage.models.FilterType.VIVID -> Color(0x20FF2200)
-    com.vantage.models.FilterType.DRAMATIC -> Color(0x38101030)
-    com.vantage.models.FilterType.CINEMATIC -> Color(0x30003040)
-    com.vantage.models.FilterType.VINTAGE -> Color(0x30806040)
-    com.vantage.models.FilterType.MUTED -> Color(0x28808080)
-    com.vantage.models.FilterType.FADE -> Color(0x24AAAAAA)
-    com.vantage.models.FilterType.MONO -> Color(0x50000000)
-    com.vantage.models.FilterType.SILVERTONE -> Color(0x28A0A0B0)
-    else -> Color.Transparent
-}
 
 @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
 private fun applyCamera2Settings(camera: Camera, analysis: SceneAnalysis) {

@@ -174,17 +174,19 @@ Choose filter, brightness, contrast, saturation, gamma to make the camera frame 
 ${intentLine}Analyze this photo. Output ONLY a short JSON, no explanation.
 Pick a filter: NATURAL|WARM|COOL|VIVID|DRAMATIC|CINEMATIC|VINTAGE|NOIR|KODAK_GOLD|PORTRA|FUJI_VELVIA|GOLDEN_HOUR|BLUE_HOUR|MUTED|FADE
 Set iso (100-3200), shutter (30-2000), wb (auto|daylight|cloudy|shade|incandescent|fluorescent|twilight), brightness (-0.1 to 0.1), contrast (1.1-1.6), saturation (0.6-1.4), gamma (1.0-1.2).
+Zoom: 0.6 wide/group, 1.0 default, 2.0 portrait, 3.0 distant subject.
+Composition: detect subject, give a short tip (e.g. "move left", "tilt down", "step back"). Set composition_ok:true if framing is good.
 Do NOT use default values. Every photo needs visible enhancement.
-{"filter":"...","iso":...,"shutter":...,"wb":"...","brightness":...,"contrast":...,"saturation":...,"gamma":...,"reason":"..."}
+{"filter":"...","iso":...,"shutter":...,"wb":"...","zoom":...,"brightness":...,"contrast":...,"saturation":...,"gamma":...,"composition_tip":"...","composition_ok":...,"reason":"..."}
 """.trimIndent()
     }
 
     private fun buildRound2Prompt(prev: SceneAnalysis, userIntent: String? = null): String {
         val wbStr = wbModeToString(prev.wbMode)
         return """
-Previous: filter=${prev.filter.name}, iso=${prev.iso}, shutter=${prev.shutter}, wb=$wbStr, brightness=${prev.brightness}, contrast=${prev.contrast}, saturation=${prev.saturation}, gamma=${prev.gamma}
-Is exposure/color correct now? Fine-tune if needed. Set ready:true if good. Output ONLY JSON:
-{"filter":"...","iso":...,"shutter":...,"wb":"...","brightness":...,"contrast":...,"saturation":...,"gamma":...,"ready":true,"reason":"..."}
+Previous: filter=${prev.filter.name}, iso=${prev.iso}, shutter=${prev.shutter}, wb=$wbStr, zoom=${prev.zoom}, brightness=${prev.brightness}, contrast=${prev.contrast}, saturation=${prev.saturation}, gamma=${prev.gamma}
+Is exposure/color/framing correct now? Fine-tune if needed. Set ready:true if good. Output ONLY JSON:
+{"filter":"...","iso":...,"shutter":...,"wb":"...","zoom":...,"brightness":...,"contrast":...,"saturation":...,"gamma":...,"composition_tip":"...","composition_ok":...,"ready":true,"reason":"..."}
 """.trimIndent()
     }
 
